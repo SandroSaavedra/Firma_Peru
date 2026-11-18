@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller: Firmador DNIe (ventana, sin consola, carpeta "onedir").
+# PyInstaller: Firma Perú (ventana, sin consola, carpeta "onedir").
 # Construir con:  python -m PyInstaller --noconfirm --clean firmador.spec
 from PyInstaller.utils.hooks import collect_submodules
 
@@ -37,7 +37,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="FirmadorDNIe",
+    name="FirmaPeru",
     debug=False,
     strip=False,
     upx=False,
@@ -50,5 +50,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="FirmadorDNIe",
+    name="FirmaPeru",
 )

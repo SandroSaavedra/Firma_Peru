@@ -1,4 +1,4 @@
-# Firmador DNIe
+# Firma Perú
 
 Aplicación de escritorio para Windows que firma documentos PDF con el DNI
 electrónico peruano y valida las firmas de un PDF.
@@ -91,7 +91,7 @@ certificado es de confianza según los certificados raíz de Windows.
 - **Imagen de visto bueno**: elíjala con **Elegir imagen…** (solo con
   **Visto bueno**). Se guarda una copia en la misma carpeta; el fondo blanco se
   vuelve transparente. Sin imagen se dibuja una marca de verificación propia.
-- **Imágenes iniciales**: si junto al programa (o junto a `FirmadorDNIe.exe`)
+- **Imágenes iniciales**: si junto al programa (o junto a `FirmaPeru.exe`)
   existen `src\Emblema peruano con firma digital.png` (logo) o
   `src\Icono circular con marca roja.png` (visto bueno), se copian la primera
   vez. Si luego las quita con **Quitar logo** o **Quitar imagen**, no se vuelven
@@ -144,5 +144,5 @@ Las pruebas no usan la tarjeta: la firma de Windows se simula.
 .\build.ps1
 ```
 
-Genera `dist\FirmadorDNIe\FirmadorDNIe.exe`. Para distribuirlo, copie la carpeta
-`dist\FirmadorDNIe` completa.
+Genera `dist\FirmaPeru\FirmaPeru.exe`. Para distribuirlo, copie la carpeta
+`dist\FirmaPeru` completa.

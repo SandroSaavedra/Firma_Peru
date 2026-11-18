@@ -1,4 +1,4 @@
-# Construye dist\FirmadorDNIe\FirmadorDNIe.exe
+# Construye dist\FirmaPeru\FirmaPeru.exe (Firma Peru)
 # Uso (PowerShell, en la carpeta del proyecto):  .\build.ps1
 #   -SinPruebas  omite pytest antes de construir
 param([switch]$SinPruebas)
@@ -15,5 +15,5 @@ python -m PyInstaller --noconfirm --clean firmador.spec
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller falló." }
 
 Write-Host ""
-Write-Host "Listo: dist\FirmadorDNIe\FirmadorDNIe.exe"
-Write-Host "Para distribuir, copie la carpeta completa dist\FirmadorDNIe."
+Write-Host "Listo: dist\FirmaPeru\FirmaPeru.exe"
+Write-Host "Para distribuir, copie la carpeta completa dist\FirmaPeru."

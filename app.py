@@ -1,5 +1,5 @@
 """
-Firmador DNIe: aplicación de escritorio (pywebview) para ver un PDF, ubicar el
+Firma Perú: aplicación de escritorio (pywebview) para ver un PDF, ubicar el
 sello, firmarlo con el DNIe a través de Windows CNG y validar firmas.
 
 La interfaz (HTML/CSS/JS en ui/) llama a los métodos públicos de `Api`. Los
@@ -52,7 +52,7 @@ from validacion import validar_pdf
 
 logger = logging.getLogger("firmador")
 
-TITULO = "Firmador DNIe"
+TITULO = "Firma Perú"
 TAM_FRAGMENTO = 1536 * 1024  # bytes por fragmento al enviar el PDF a la interfaz
 TAM_MAXIMO_PDF = 200 * 1024 * 1024  # límite de un PDF recibido como bytes desde la interfaz
 VIDA_SUBIDA = 120  # segundos sin actividad tras los cuales se descarta una subida
