@@ -18,20 +18,19 @@ electrónico peruano (DNIe) y valida las firmas de un PDF.
 
 ## Descarga e instalación
 
-1. Vaya a la sección **[Releases](../../releases)** y descargue el archivo
-   `.zip` de la última versión.
-2. Descomprima el `.zip` en una carpeta, por ejemplo `Documentos\FirmaPeru`.
-3. Abra `FirmaPeru.exe`.
+1. Vaya a la sección **[Releases](../../releases)** y descargue
+   `FirmaPeru-Setup-<versión>.exe` de la última versión.
+2. Ejecute el instalador y siga los pasos. **No requiere permisos de
+   administrador**: se instala solo para el usuario actual.
+3. Abra **Firma Perú** desde el menú Inicio (o desde el acceso directo del
+   escritorio, si lo marcó durante la instalación).
 
-> **Importante:** no saque `FirmaPeru.exe` de su carpeta. Necesita la carpeta
-> `_internal` que está a su lado para funcionar.
-
-No requiere permisos de administrador.
+Para desinstalar: **Configuración → Aplicaciones → Firma Perú → Desinstalar**.
 
 ### Aviso de Windows SmartScreen
 
-El ejecutable no está firmado con un certificado de editor, por lo que Windows
-puede mostrar «Windows protegió su PC» la primera vez. Para continuar, pulse
+El instalador no está firmado con un certificado de editor, por lo que Windows
+puede mostrar «Windows protegió su PC» al ejecutarlo. Para continuar, pulse
 **Más información** y luego **Ejecutar de todas formas**.
 
 ## Uso
