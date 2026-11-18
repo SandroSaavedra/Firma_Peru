@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Firmador DNIe</title>
+  <link rel="stylesheet" href="estilos.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-pluma" viewBox="0 0 24 24"><path d="M4 20c3-1 5.5-1.5 8-4l7-7a2.1 2.1 0 0 0-3-3l-7 7c-2.5 2.5-3 5-4 8Z"/><path d="M14.5 6.5l3 3"/><path d="M4 20l2.5-2.5"/></symbol>
+    <symbol id="i-abrir" viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5Z"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></symbol>
+    <symbol id="i-escudo" viewBox="0 0 24 24"><path d="M12 3l7.5 3v5.5c0 4.5-3.2 8.2-7.5 9.5-4.3-1.3-7.5-5-7.5-9.5V6Z"/><path d="M8.8 12.2l2.2 2.2 4.3-4.6"/></symbol>
+    <symbol id="i-sol" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+    <symbol id="i-luna" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></symbol>
+    <symbol id="i-menos" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
+    <symbol id="i-mas" viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></symbol>
+    <symbol id="i-ajustar" viewBox="0 0 24 24"><path d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"/></symbol>
+    <symbol id="i-izq" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></symbol>
+    <symbol id="i-der" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="i-tarjeta" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2"/><rect x="6" y="9" width="4" height="3.5" rx=".6"/><path d="M13 10h5M13 13.5h3"/></symbol>
+    <symbol id="i-recargar" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.3-4.4L4 8.5"/><path d="M4 4v4.5h4.5"/><path d="M4 13a8 8 0 0 0 14.3 4.4L20 15.5"/><path d="M20 20v-4.5h-4.5"/></symbol>
+    <symbol id="i-ok" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.3l2.7 2.7L16.2 9.5"/></symbol>
+    <symbol id="i-alerta" viewBox="0 0 24 24"><path d="M12 4l9 16H3Z"/><path d="M12 10v4.5M12 17.2v.3"/></symbol>
+    <symbol id="i-error" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></symbol>
+    <symbol id="i-carpeta" viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5Z"/><path d="M3 11h18"/></symbol>
+    <symbol id="i-candado" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.8v.3"/></symbol>
+    <symbol id="i-cerrar" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+    <symbol id="i-papelera" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V4.8h5V7M6.5 7l1 12.2a1.5 1.5 0 0 0 1.5 1.3h6a1.5 1.5 0 0 0 1.5-1.3l1-12.2"/><path d="M10.3 11v5.5M13.7 11v5.5"/></symbol>
+    <symbol id="i-imagen" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M20.5 16l-5-5-8.5 8.5"/></symbol>
+    <!-- Marca de visto bueno (misma geometría que firma_pdf._marca_visto_bueno, eje y invertido). -->
+    <symbol id="marca-vb" viewBox="0 0 100 100"><circle cx="50" cy="50" r="43" fill="none" stroke="#66666b" stroke-width="8"/><path d="M27 49L44 66L75 30" fill="none" stroke="#c71f1f" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="app" id="app" data-estado="vacio">
+  <header class="barra">
+    <div class="marca">
+      <span class="marca-icono"><svg class="ic"><use href="#i-pluma"/></svg></span>
+      <span class="marca-nombre">Firmador <b>DNIe</b></span>
+    </div>
+
+    <div class="documento" id="doc-info" hidden>
+      <svg class="ic doc-icono"><use href="#i-doc"/></svg>
+      <div class="doc-textos">
+        <span class="doc-nombre" id="doc-nombre"></span>
+        <span class="doc-meta" id="doc-meta"></span>
+      </div>
+      <button class="chip chip-firmas" id="chip-firmas" type="button" hidden
+              title="Ver las firmas que ya tiene este documento"></button>
+      <button class="btn-icono doc-cerrar" id="btn-cerrar-doc" type="button"
+              aria-label="Cerrar documento" title="Cerrar documento (Ctrl+W)"><svg class="ic"><use href="#i-cerrar"/></svg></button>
+    </div>
+
+    <nav class="pestanas" role="tablist" aria-label="Secciones">
+      <button role="tab" id="tab-firmar" aria-controls="vista-firmar" aria-selected="true" type="button" title="Firmar (Ctrl+1)">Firmar</button>
+      <button role="tab" id="tab-validar" aria-controls="vista-validar" aria-selected="false" type="button" tabindex="-1" title="Validar firmas (Ctrl+2)">Validar firmas</button>
+    </nav>
+
+    <div class="acciones">
+      <button class="btn btn-secundario" id="btn-abrir" type="button" title="Agregar uno o varios PDF (Ctrl+O)">
+        <svg class="ic"><use href="#i-abrir"/></svg><span>Agregar PDFs</span>
+      </button>
+      <button class="btn-icono" id="btn-tema" type="button" aria-label="Cambiar a tema oscuro" title="Cambiar tema">
+        <svg class="ic ic-sol"><use href="#i-sol"/></svg><svg class="ic ic-luna"><use href="#i-luna"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="principal">
+    <!-- ============ Vista: Firmar ============ -->
+    <section class="vista-firmar" id="vista-firmar" role="tabpanel" aria-labelledby="tab-firmar">
+      <aside class="miniaturas" aria-label="Documentos y páginas">
+        <section class="cola" id="cola" aria-labelledby="cola-titulo" hidden>
+          <div class="cola-cabecera">
+            <h2 class="miniaturas-titulo" id="cola-titulo">Documentos (<span id="cola-total">0</span>)</h2>
+            <button class="btn-icono btn-mini" id="btn-agregar" type="button" aria-label="Agregar PDFs" title="Agregar PDFs (Ctrl+O)"><svg class="ic"><use href="#i-mas"/></svg></button>
+            <button class="btn-icono btn-mini" id="btn-vaciar" type="button" aria-label="Vaciar cola" title="Vaciar cola"><svg class="ic"><use href="#i-papelera"/></svg></button>
+          </div>
+          <ul class="lista-cola" id="lista-cola" aria-label="Documentos en cola"></ul>
+        </section>
+        <div class="miniaturas-titulo titulo-paginas">Páginas</div>
+        <ol class="lista-miniaturas" id="lista-miniaturas"></ol>
+      </aside>
+
+      <div class="visor">
+        <div class="visor-barra" id="visor-barra">
+          <div class="grupo">
+            <button class="btn-icono" id="btn-pag-ant" type="button" aria-label="Página anterior" title="Página anterior (Re Pág)"><svg class="ic"><use href="#i-izq"/></svg></button>
+            <label class="paginador">
+              <span class="sr">Página actual</span>
+              <input id="inp-pagina" type="number" min="1" value="1" inputmode="numeric">
+              <span>de <span id="total-paginas">0</span></span>
+            </label>
+            <button class="btn-icono" id="btn-pag-sig" type="button" aria-label="Página siguiente" title="Página siguiente (Av Pág)"><svg class="ic"><use href="#i-der"/></svg></button>
+          </div>
+          <div class="grupo">
+            <button class="btn-icono" id="btn-zoom-menos" type="button" aria-label="Reducir" title="Reducir (Ctrl+-)"><svg class="ic"><use href="#i-menos"/></svg></button>
+            <output class="zoom-valor" id="zoom-valor" aria-live="polite">100 %</output>
+            <button class="btn-icono" id="btn-zoom-mas" type="button" aria-label="Ampliar" title="Ampliar (Ctrl++)"><svg class="ic"><use href="#i-mas"/></svg></button>
+            <button class="btn btn-fantasma" id="btn-ajustar" type="button" aria-pressed="false" title="Ajustar al ancho (Ctrl+0)"><svg class="ic"><use href="#i-ajustar"/></svg><span>Ancho</span></button>
+            <button class="btn btn-fantasma" id="btn-pagina" type="button" aria-pressed="true" title="Página completa (Ctrl+9)"><svg class="ic"><use href="#i-doc"/></svg><span>Página</span></button>
+          </div>
+        </div>
+
+        <div class="cargador" id="cargador" role="status" aria-live="polite" hidden>
+          <div class="cargador-caja">
+            <span class="girando-chico" aria-hidden="true"></span>
+            <p id="cargador-texto">Cargando documento…</p>
+            <div class="progreso cargador-progreso" id="cargador-progreso" hidden><span id="cargador-barra"></span></div>
+          </div>
+        </div>
+
+        <div class="lienzo-scroll" id="lienzo-scroll">
+          <div class="vacio" id="vacio">
+            <div class="vacio-zona">
+              <div class="vacio-ilustracion" aria-hidden="true">
+                <div class="hoja-mini"><span></span><span></span><span></span><span class="sello-mini"></span></div>
+              </div>
+              <h1 id="vacio-titulo">Firme sus PDF con su DNIe</h1>
+              <p id="vacio-texto">Arrastre uno o varios documentos PDF a esta ventana o ábralos desde su equipo.</p>
+              <button class="btn btn-primario btn-grande" id="btn-abrir-vacio" type="button">
+                <svg class="ic"><use href="#i-abrir"/></svg><span>Abrir PDF</span>
+              </button>
+              <ul class="atajos" aria-label="Atajos de teclado">
+                <li><kbd>Ctrl</kbd>+<kbd>O</kbd> agregar</li>
+                <li><kbd>Ctrl</kbd>+<kbd>Enter</kbd> firmar</li>
+                <li><kbd>Ctrl</kbd>+<kbd>W</kbd> cerrar documento</li>
+                <li><kbd>Ctrl</kbd>+<kbd>0</kbd> ajustar ancho</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="hoja" id="hoja" hidden>
+            <canvas id="lienzo" aria-label="Vista de la página"></canvas>
+            <div class="sello" id="sello" tabindex="0" role="group"
+                 aria-label="Sello de firma. Arrastre para mover; use las flechas para moverlo y Alt con las flechas para cambiar su tamaño."
+                 aria-roledescription="sello movible">
+              <div class="sello-contenido" id="sello-contenido" aria-hidden="true">
+                <svg class="sello-marca" viewBox="0 0 100 100"><use href="#marca-vb"/></svg>
+                <img class="sello-logo" id="sello-logo" alt="" hidden>
+                <img class="sello-icono" id="sello-icono" alt="" hidden>
+                <div class="sello-texto" id="sello-texto"><div class="sello-lineas" id="sello-lineas"></div></div>
+              </div>
+              <span class="tirador" data-esquina="nw" aria-hidden="true"></span>
+              <span class="tirador" data-esquina="ne" aria-hidden="true"></span>
+              <span class="tirador" data-esquina="sw" aria-hidden="true"></span>
+              <span class="tirador" data-esquina="se" aria-hidden="true"></span>
+              <span class="sello-etiqueta" id="sello-etiqueta"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="panel" aria-label="Opciones de firma">
+        <section class="tarjeta-dnie" id="tarjeta-dnie" data-estado="cargando" aria-live="polite">
+          <div class="dnie-cabecera">
+            <span class="dnie-icono"><svg class="ic"><use href="#i-tarjeta"/></svg></span>
+            <div class="dnie-textos">
+              <span class="dnie-titulo"><span class="punto" aria-hidden="true"></span><span id="dnie-estado">Buscando el DNIe…</span></span>
+              <span class="dnie-titular" id="dnie-titular"></span>
+            </div>
+            <button class="btn-icono" id="btn-dnie" type="button" aria-label="Volver a buscar el DNIe" title="Volver a buscar el DNIe"><svg class="ic"><use href="#i-recargar"/></svg></button>
+          </div>
+          <dl class="dnie-detalle" id="dnie-detalle" hidden>
+            <div><dt>Emisor</dt><dd id="dnie-emisor"></dd></div>
+            <div><dt>Vigente hasta</dt><dd id="dnie-vence"></dd></div>
+          </dl>
+        </section>
+
+        <div class="nota nota-aviso" id="nota-firmas" hidden>
+          <svg class="ic"><use href="#i-info"/></svg>
+          <p id="nota-firmas-texto"></p>
+        </div>
+
+        <fieldset class="campo">
+          <legend>Tipo de firma</legend>
+          <div class="segmentado">
+            <label><input type="radio" name="tipo" value="firma" checked><span>Firma</span></label>
+            <label><input type="radio" name="tipo" value="visto_bueno"><span>Visto bueno</span></label>
+          </div>
+          <p class="ayuda" id="txt-tipo-ayuda"></p>
+        </fieldset>
+
+        <div class="campo" id="campo-logo">
+          <span class="etiqueta">Logo <span class="opcional">(opcional)</span></span>
+          <div class="logo-fila">
+            <div class="logo-vista" id="logo-vista">
+              <img id="logo-img" alt="Vista previa del logo" hidden>
+              <svg class="ic" id="logo-vacio"><use href="#i-imagen"/></svg>
+            </div>
+            <div class="logo-acciones">
+              <button class="btn btn-secundario btn-chico" id="btn-logo" type="button">
+                <svg class="ic"><use href="#i-imagen"/></svg><span id="btn-logo-texto">Elegir logo…</span>
+              </button>
+              <button class="enlace enlace-peligro" id="btn-quitar-logo" type="button" hidden>Quitar logo</button>
+            </div>
+          </div>
+          <p class="ayuda">PNG o JPG. Se guarda una copia en su equipo; puede mover o borrar el original.</p>
+        </div>
+
+        <div class="campo" id="campo-imagen-vb" hidden>
+          <span class="etiqueta">Imagen de visto bueno <span class="opcional">(opcional)</span></span>
+          <div class="logo-fila">
+            <div class="logo-vista logo-vista-cuadrada" id="imagen-vb-vista">
+              <img id="imagen-vb-img" alt="Vista previa de la imagen de visto bueno" hidden>
+              <svg class="marca-vacia" id="imagen-vb-vacio" viewBox="0 0 100 100"><use href="#marca-vb"/></svg>
+            </div>
+            <div class="logo-acciones">
+              <button class="btn btn-secundario btn-chico" id="btn-imagen-vb" type="button">
+                <svg class="ic"><use href="#i-imagen"/></svg><span id="btn-imagen-vb-texto">Elegir imagen…</span>
+              </button>
+              <button class="enlace enlace-peligro" id="btn-quitar-imagen-vb" type="button" hidden>Quitar imagen</button>
+            </div>
+          </div>
+          <p class="ayuda" id="txt-imagen-vb-ayuda">Va arriba del texto. Sin imagen se usa la marca de verificación que se muestra. Se guarda una copia en su equipo.</p>
+        </div>
+
+        <div class="campo">
+          <label class="etiqueta" for="txt-motivo">Motivo</label>
+          <input id="txt-motivo" type="text" autocomplete="off" maxlength="120">
+          <p class="ayuda">Aparece en el sello y queda registrado en la firma.</p>
+        </div>
+
+        <div class="campo">
+          <label class="etiqueta" for="txt-lugar">Lugar <span class="opcional">(opcional)</span></label>
+          <input id="txt-lugar" type="text" autocomplete="off" placeholder="Lima, Perú" maxlength="120">
+          <p class="ayuda">Se registra en los datos de la firma; no se muestra en el sello.</p>
+        </div>
+
+        <fieldset class="campo">
+          <legend>Sello visible en</legend>
+          <div class="segmentado">
+            <label><input type="radio" name="paginas" value="todas" checked><span>Todas las páginas</span></label>
+            <label><input type="radio" name="paginas" value="ultima"><span>Solo la página de firma</span></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="campo">
+          <legend>Campo de firma en</legend>
+          <div class="segmentado">
+            <label><input type="radio" name="pagina-firma" value="ultima" checked><span>Última página</span></label>
+            <label><input type="radio" name="pagina-firma" value="actual"><span id="lbl-pagina-actual">Página actual</span></label>
+          </div>
+          <p class="ayuda" id="txt-campo-ayuda">Arrastre el sello sobre la página para ubicarlo y sus esquinas para cambiar el tamaño. La posición se aplica igual en todas las páginas.</p>
+          <label class="interruptor interruptor-propio" id="campo-posicion-propia" hidden>
+            <input type="checkbox" id="chk-posicion-propia">
+            <span class="interruptor-pista" aria-hidden="true"></span>
+            <span>Posición propia para este documento</span>
+          </label>
+        </fieldset>
+
+        <div class="campo">
+          <label class="interruptor">
+            <input type="checkbox" id="chk-guardar-como">
+            <span class="interruptor-pista" aria-hidden="true"></span>
+            <span id="lbl-guardar-como">Elegir dónde guardar</span>
+          </label>
+          <p class="ayuda" id="txt-destino">Se guardará junto al original.</p>
+        </div>
+
+        <div class="panel-pie">
+          <button class="btn btn-primario btn-grande btn-firmar" id="btn-firmar" type="button" disabled title="Firmar (Ctrl+Enter)">
+            <svg class="ic"><use href="#i-pluma"/></svg><span id="btn-firmar-texto">Firmar documento</span>
+          </button>
+          <p class="ayuda ayuda-pin"><svg class="ic"><use href="#i-candado"/></svg>El PIN se ingresa en la ventana de Windows. Esta aplicación no lo ve ni lo guarda.</p>
+        </div>
+      </aside>
+    </section>
+
+    <!-- ============ Vista: Validar ============ -->
+    <section class="vista-validar" id="vista-validar" role="tabpanel" aria-labelledby="tab-validar" hidden>
+      <div class="validar-contenido">
+        <header class="validar-cabecera">
+          <div>
+            <h2>Validar firmas</h2>
+            <p class="validar-sub" id="validar-sub">Revise quién firmó un PDF y si fue modificado después.</p>
+          </div>
+          <div class="validar-acciones">
+            <button class="btn btn-secundario" id="btn-validar-abierto" type="button" disabled>
+              <svg class="ic"><use href="#i-escudo"/></svg><span>Validar el PDF abierto</span>
+            </button>
+            <button class="btn btn-secundario" id="btn-validar-otro" type="button">
+              <svg class="ic"><use href="#i-abrir"/></svg><span>Elegir otro PDF…</span>
+            </button>
+          </div>
+        </header>
+        <div class="resultados" id="resultados" aria-live="polite">
+          <div class="validar-vacio">
+            <svg class="ic"><use href="#i-escudo"/></svg>
+            <p>Elija un PDF para revisar sus firmas.</p>
+          </div>
+        </div>
+        <p class="ayuda validar-nota">La confianza se comprueba con los certificados raíz instalados en Windows. Sin conexión a internet no se puede consultar la revocación del certificado; en ese caso no se marca la firma como inválida por ese motivo.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ Diálogo de firma ============ -->
+  <div class="dialogo-fondo" id="dialogo" hidden>
+    <div class="dialogo" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="dialogo-titulo" aria-describedby="dialogo-texto" data-tipo="pin">
+      <div class="dialogo-icono" aria-hidden="true">
+        <span class="girando"></span>
+        <svg class="ic ic-ok"><use href="#i-ok"/></svg>
+        <svg class="ic ic-error"><use href="#i-error"/></svg>
+        <svg class="ic ic-alerta"><use href="#i-alerta"/></svg>
+      </div>
+      <h2 id="dialogo-titulo"></h2>
+      <p id="dialogo-texto"></p>
+      <div class="progreso" id="dialogo-progreso" role="progressbar" aria-label="Avance de la firma"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span id="dialogo-progreso-valor"></span></div>
+      <p class="dialogo-nota" id="dialogo-nota" hidden></p>
+      <ul class="dialogo-lista" id="dialogo-lista" hidden></ul>
+      <p class="dialogo-ruta" id="dialogo-ruta" hidden></p>
+      <div class="dialogo-acciones" id="dialogo-acciones"></div>
+    </div>
+  </div>
+
+  <div class="capa-soltar" id="capa-soltar" aria-hidden="true">
+    <div class="capa-soltar-caja"><svg class="ic"><use href="#i-doc"/></svg><span>Suelte los PDF para abrirlos</span></div>
+  </div>
+
+  <div class="avisos" id="avisos" role="status" aria-live="polite"></div>
+</div>
+</body>
+</html>

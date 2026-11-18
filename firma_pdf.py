@@ -1,0 +1,692 @@
+"""
+Núcleo de firma de PDF, independiente de la interfaz (CLI o escritorio).
+
+Produce UNA sola firma criptográfica PAdES (subfilter ETSI.CAdES.detached)
+con un campo de firma visible y, opcionalmente, el mismo sello dibujado como
+contenido en las demás páginas.
+
+Convención de coordenadas (la interfaz debe usar la misma):
+  - La caja del sello se expresa en FRACCIONES (0..1) de la "vista" de la
+    página: la intersección de /CropBox y /MediaBox (lo mismo que `page.view`
+    en pdf.js). Origen abajo a la izquierda, espacio PDF SIN ROTAR.
+  - En páginas con /Rotate distinto de 0 la caja se ubica en el lugar correcto
+    (si la interfaz convierte con `viewport.convertToPdfPoint`), pero el texto
+    del sello se dibuja con la orientación del espacio sin rotar, es decir,
+    girado junto con la página.
+
+PDF que ya tienen firmas: dibujar el sello como contenido en otras páginas
+modificaría el documento ya firmado y los validadores (Adobe, pyHanko) lo
+marcarían como un cambio no permitido. En ese caso solo se coloca el campo de
+firma visible (modo "solo_campo"), lo que sí está permitido. Si una firma de
+certificación (DocMDP) prohíbe cualquier cambio, se rechaza la operación.
+
+Tipos de sello (sin borde, letra sin serifa: Arial incrustada si está
+disponible, si no Helvetica estándar):
+  - "firma": logo del usuario a la izquierda (≈38 % del ancho) y texto a la
+    derecha. Sin logo, el texto ocupa toda la caja.
+  - "visto_bueno": imagen arriba (la del usuario o, si no hay, una marca de
+    verificación vectorial propia), opaca, y el texto debajo sin superponerse.
+El motivo se escribe en el sello y también como /Reason de la firma.
+"""
+from __future__ import annotations
+
+import io
+import logging
+import os
+from dataclasses import dataclass, field
+from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+
+from pyhanko.pdf_utils import generic
+from pyhanko.pdf_utils.content import RawContent
+from pyhanko.pdf_utils.font import FontEngineFactory, SimpleFontEngineFactory
+from pyhanko.pdf_utils.generic import pdf_name
+from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+from pyhanko.pdf_utils.layout import AxisAlignment, BoxConstraints, InnerScaling, Margins, SimpleBoxLayoutRule
+from pyhanko.pdf_utils.reader import PdfFileReader
+from pyhanko.pdf_utils.rw_common import find_inherited_value_in_tree
+from pyhanko.pdf_utils.text import TextBoxStyle
+from pyhanko.pdf_utils.writer import PdfFileWriter
+from pyhanko.sign import fields, signers
+from pyhanko.sign.validation.pdf_embedded import read_certification_data
+from pyhanko.stamp import TextStamp, TextStampStyle
+
+logger = logging.getLogger("firmador")
+# fontTools avisa de cada tabla que no sabe reducir al incrustar la fuente; no aporta nada al usuario.
+logging.getLogger("fontTools.subset").setLevel(logging.ERROR)
+
+TipoSello = Literal["firma", "visto_bueno"]
+TIPOS_SELLO: tuple[str, ...] = ("firma", "visto_bueno")
+MOTIVOS_PREDETERMINADOS = {"firma": "Soy el autor del documento", "visto_bueno": "Doy V° B°"}
+PLANTILLAS_SELLO = {
+    "firma": "Firmado digitalmente por: %(firmante)s\nMotivo: %(motivo)s\nFecha: %(ts)s",
+    "visto_bueno": "Firmado digitalmente por\n%(firmante)s\nMotivo: %(motivo)s\nFecha: %(ts)s",
+}
+FORMATOS_FECHA = {"firma": "%Y/%m/%d %H:%M:%S%z", "visto_bueno": "%d.%m.%Y %H:%M:%S %:z"}
+TEXTO_SELLO = PLANTILLAS_SELLO["firma"]
+NOMBRE_CAMPO = "FirmaDNIe"
+PAGINAS_VALIDAS = ("todas", "ultima")
+_TOLERANCIA = 1e-6
+
+# Geometría de los sellos (fracciones de la caja) y tamaños de letra en pt.
+PROPORCION_LOGO = 0.38
+_TAM_MAXIMO = {"firma": 9, "visto_bueno": 8}
+_TAM_MINIMO = 3.0
+_INTERLINEADO = 1.2
+# Visto bueno: la imagen ocupa el 55 % superior y se alinea a la izquierda,
+# como el bloque de texto que va debajo.
+PROPORCION_IMAGEN_VB = 0.55
+ALINEACION_IMAGEN_VB = AxisAlignment.ALIGN_MIN
+_FUENTE_ARIAL = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "arial.ttf"
+
+# Marca de visto bueno (diseño propio): círculo gris y check rojo apagado, en
+# una caja de 100 x 100. El círculo se traza con 4 curvas de Bézier.
+_K = 0.5523 * 43
+
+
+def _marca_visto_bueno() -> RawContent:
+    c, r = 50, 43
+    circulo = (
+        b"%g %g m " % (c + r, c)
+        + b"%g %g %g %g %g %g c " % (c + r, c + _K, c + _K, c + r, c, c + r)
+        + b"%g %g %g %g %g %g c " % (c - _K, c + r, c - r, c + _K, c - r, c)
+        + b"%g %g %g %g %g %g c " % (c - r, c - _K, c - _K, c - r, c, c - r)
+        + b"%g %g %g %g %g %g c " % (c + _K, c - r, c + r, c - _K, c + r, c)
+    )
+    datos = (
+        b"q 1 J 1 j 0.4 0.4 0.42 RG 8 w " + circulo + b"S "
+        b"0.78 0.12 0.12 RG 12 w 27 51 m 44 34 l 75 70 l S Q"
+    )
+    return RawContent(datos, box=BoxConstraints(width=100, height=100))
+
+
+class ErrorFirma(ValueError):
+    """Error de datos o de documento, con mensaje apto para el usuario."""
+
+
+@dataclass
+class CajaRelativa:
+    """Caja del sello en fracciones de la vista de la página (origen abajo-izq.)."""
+
+    x: float
+    y: float
+    ancho: float
+    alto: float
+
+
+# Equivale a la caja fija antigua de firma1.py (400, 30, 560, 75) en A4.
+CAJA_PREDETERMINADA = CajaRelativa(x=400 / 595, y=30 / 842, ancho=160 / 595, alto=45 / 842)
+
+
+# Caja predeterminada de cada tipo en A4 (la interfaz usa las mismas):
+# «Firma» ancha (260 x 75 pt) y «Visto bueno» más alta (140 x 110 pt: icono
+# arriba y 4-5 líneas de texto debajo, legibles a unos 8 pt).
+CAJAS_POR_TIPO = {
+    "firma": CajaRelativa(x=300 / 595, y=30 / 842, ancho=260 / 595, alto=75 / 842),
+    "visto_bueno": CajaRelativa(x=420 / 595, y=30 / 842, ancho=140 / 595, alto=110 / 842),
+}
+
+
+def caja_predeterminada(tipo: str) -> CajaRelativa:
+    return CajaRelativa(**vars(CAJAS_POR_TIPO.get(tipo, CAJAS_POR_TIPO["firma"])))
+
+
+@dataclass
+class OpcionesFirma:
+    caja: CajaRelativa = field(default_factory=lambda: CajaRelativa(**vars(CAJA_PREDETERMINADA)))
+    paginas: str = "todas"  # "todas" | "ultima"
+    pagina_firma: int = -1  # página con el campo de firma real (negativo = desde el final)
+    tipo: TipoSello = "firma"
+    texto_sello: str | None = None  # None = texto del tipo de sello
+    motivo: str | None = None  # None o vacío = motivo predeterminado del tipo
+    lugar: str | None = None
+    logo: str | os.PathLike | None = None  # imagen del logo (solo tipo "firma")
+    imagen_vb: str | os.PathLike | None = None  # imagen de arriba (solo "visto_bueno"; si falta, marca vectorial)
+    nombre_campo: str = NOMBRE_CAMPO
+
+
+@dataclass
+class ResultadoFirma:
+    salida: str
+    total_paginas: int
+    paginas_selladas: list[int]
+    pagina_firma: int
+    modo: str  # "contenido" (sello en páginas + campo) | "solo_campo"
+    firmas_previas: int
+    campo: str
+
+
+@dataclass
+class InfoPdf:
+    total_paginas: int
+    firmas: list[str]  # nombres de los campos con firmas ya embebidas
+    docmdp: int | None  # nivel de permisos de certificación (1, 2, 3) o None
+    vistas: list[tuple[float, float, float, float]]
+    rotaciones: list[int]
+
+
+def caja_absoluta(caja: CajaRelativa, vista) -> tuple[float, float, float, float]:
+    """Convierte la caja relativa a (x1, y1, x2, y2) en puntos PDF de la vista dada."""
+    valores = (caja.x, caja.y, caja.ancho, caja.alto)
+    if (
+        any(v < -_TOLERANCIA or v > 1 + _TOLERANCIA for v in valores)
+        or caja.ancho <= 0
+        or caja.alto <= 0
+        or caja.x + caja.ancho > 1 + _TOLERANCIA
+        or caja.y + caja.alto > 1 + _TOLERANCIA
+    ):
+        raise ErrorFirma("La posición del sello está fuera de la página.")
+    x0, y0, x1, y1 = vista
+    ancho, alto = x1 - x0, y1 - y0
+    return (
+        x0 + caja.x * ancho,
+        y0 + caja.y * alto,
+        x0 + (caja.x + caja.ancho) * ancho,
+        y0 + (caja.y + caja.alto) * alto,
+    )
+
+
+def _rectangulo(valor):
+    a, b, c, d = (float(v) for v in valor)
+    return min(a, c), min(b, d), max(a, c), max(b, d)
+
+
+def _pagina(handler, indice):
+    return handler.find_page_for_modification(indice)[0].get_object()
+
+
+def vista_de_pagina(handler, indice) -> tuple[float, float, float, float]:
+    """Intersección de /CropBox y /MediaBox de la página (como `page.view` de pdf.js)."""
+    pagina = _pagina(handler, indice)
+    media = find_inherited_value_in_tree(pagina, "/MediaBox", "/Parent")
+    if media is None:
+        raise ErrorFirma(f"La página {indice + 1} no tiene tamaño definido (/MediaBox).")
+    media = _rectangulo(media)
+    recorte = find_inherited_value_in_tree(pagina, "/CropBox", "/Parent")
+    if recorte is None:
+        return media
+    recorte = _rectangulo(recorte)
+    vista = (
+        max(media[0], recorte[0]),
+        max(media[1], recorte[1]),
+        min(media[2], recorte[2]),
+        min(media[3], recorte[3]),
+    )
+    if vista[2] <= vista[0] or vista[3] <= vista[1]:
+        return media
+    return vista
+
+
+def _rotacion(handler, indice) -> int:
+    valor = find_inherited_value_in_tree(_pagina(handler, indice), "/Rotate", "/Parent")
+    return int(valor or 0) % 360
+
+
+def _total_paginas(handler) -> int:
+    return int(handler.root["/Pages"]["/Count"])
+
+
+def _nivel_docmdp(reader) -> int | None:
+    info = read_certification_data(reader)
+    if info is None or info.permission is None:
+        return None
+    return int(info.permission.value)
+
+
+def analizar_pdf(ruta) -> InfoPdf:
+    """Datos del PDF útiles para la interfaz. No modifica nada."""
+    with open(ruta, "rb") as f:
+        reader = PdfFileReader(f, strict=False)
+        _desbloquear(reader)
+        total = _total_paginas(reader)
+        return InfoPdf(
+            total_paginas=total,
+            firmas=[s.field_name for s in reader.embedded_signatures],
+            docmdp=_nivel_docmdp(reader),
+            vistas=[vista_de_pagina(reader, i) for i in range(total)],
+            rotaciones=[_rotacion(reader, i) for i in range(total)],
+        )
+
+
+def _desbloquear(reader):
+    """Abre PDF cifrados sin contraseña de usuario; rechaza los que la exigen."""
+    if not reader.encrypted:
+        return
+    try:
+        reader.decrypt("")
+    except Exception as e:  # noqa: BLE001 - cualquier fallo significa "pide contraseña"
+        raise ErrorFirma("El PDF está protegido con contraseña y no se puede firmar.") from e
+
+
+def _validar_plantilla(plantilla: str, parametros: dict):
+    try:
+        plantilla % {**parametros, "ts": "2000-01-01 00:00:00"}
+    except (KeyError, ValueError, TypeError) as e:
+        raise ErrorFirma(
+            "El texto del sello no es válido. Usa solo %(firmante)s, %(ts)s, "
+            "%(motivo)s y %(lugar)s como campos variables."
+        ) from e
+
+
+def _nombre_campo_libre(handler, base: str) -> str:
+    existentes = {nombre for nombre, _, _ in fields.enumerate_sig_fields(handler)}
+    if base not in existentes:
+        return base
+    n = 2
+    while f"{base}_{n}" in existentes:
+        n += 1
+    return f"{base}_{n}"
+
+
+def _asegurar_contenido(writer, indice):
+    """Algunas páginas no tienen /Contents; TextStamp lo necesita para agregar su flujo."""
+    ref, _ = writer.find_page_for_modification(indice)
+    pagina = ref.get_object()
+    if "/Contents" not in pagina:
+        pagina[pdf_name("/Contents")] = writer.add_object(generic.StreamObject(stream_data=b""))
+        writer.mark_update(ref)
+
+
+# --- estilos de sello -----------------------------------------------------------
+
+
+def fecha_sello(tipo: str, momento: datetime) -> str:
+    """Fecha y hora con el formato del tipo de sello."""
+    return momento.strftime(FORMATOS_FECHA[tipo])
+
+
+class _FabricaFuenteEnMemoria(FontEngineFactory):
+    """Como `GlyphAccumulatorFactory`, pero con la fuente ya cargada en memoria."""
+
+    def __init__(self, datos: bytes):
+        self.datos = datos
+
+    def create_font_engine(self, writer, obj_stream=None):
+        from pyhanko.pdf_utils.font.opentype import GlyphAccumulator
+
+        if obj_stream is None and writer.stream_xrefs:
+            obj_stream = writer.prepare_object_stream()
+        return GlyphAccumulator(writer=writer, font_handle=io.BytesIO(self.datos), font_size=10, obj_stream=obj_stream)
+
+
+def _arial_a_1000_unidades(ruta: Path) -> bytes:
+    """
+    Arial reducida a latín (incluye á, ñ, °) y reescalada a 1000 unidades por
+    em. pyHanko 0.38 escribe los anchos (/W) en unidades de la fuente, pero PDF
+    los interpreta en milésimas de em: con las 2048 unidades de Arial las
+    letras quedarían separadas. Con 1000 unidades coinciden.
+    """
+    from fontTools import subset
+    from fontTools.ttLib import TTFont
+    from fontTools.ttLib.scaleUpem import scale_upem
+
+    fuente = TTFont(str(ruta))
+    opciones = subset.Options()
+    opciones.hinting = False
+    opciones.layout_features = ["kern"]
+    opciones.name_IDs = ["*"]
+    opciones.notdef_outline = True
+    subconjunto = subset.Subsetter(opciones)
+    subconjunto.populate(unicodes=[*range(0x20, 0x7F), *range(0xA0, 0x180), *range(0x2010, 0x2027), 0x20AC])
+    subconjunto.subset(fuente)
+    scale_upem(fuente, 1000)
+    salida = io.BytesIO()
+    fuente.save(salida)
+    return salida.getvalue()
+
+
+@lru_cache(maxsize=1)
+def _fuente():
+    """
+    (fábrica de fuente, motor para medir textos, nombre). Arial se incrusta
+    (subconjunto) con el soporte OpenType de pyHanko (fontTools + uharfbuzz);
+    si no está disponible se usa Helvetica, fuente estándar no incrustada.
+    """
+    try:
+        if not _FUENTE_ARIAL.is_file():
+            raise FileNotFoundError(str(_FUENTE_ARIAL))
+        fabrica = _FabricaFuenteEnMemoria(_arial_a_1000_unidades(_FUENTE_ARIAL))
+        return fabrica, fabrica.create_font_engine(PdfFileWriter()), "Arial"
+    except Exception:  # noqa: BLE001 - cualquier fallo: fuente estándar
+        logger.warning("No se pudo usar Arial; el sello usará Helvetica estándar.", exc_info=True)
+        fabrica = SimpleFontEngineFactory("Helvetica", 0.56)
+        return fabrica, fabrica.create_font_engine(PdfFileWriter()), "Helvetica"
+
+
+def nombre_fuente() -> str:
+    """Fuente con la que se escribe el sello: "Arial" (incrustada) o "Helvetica"."""
+    return _fuente()[2]
+
+
+def _medir_em(texto: str) -> float:
+    """Ancho del texto en unidades de em (multiplicar por el tamaño de letra)."""
+    return _fuente()[1].shape(texto).x_advance if texto else 0.0
+
+
+def _ajustar_lineas(texto: str, ancho_max: float, medir) -> list[str]:
+    """Reparte el texto en líneas que no superen `ancho_max` según `medir(línea)`."""
+    lineas: list[str] = []
+    for parrafo in texto.split("\n"):
+        actual = ""
+        for palabra in parrafo.split(" "):
+            candidata = f"{actual} {palabra}" if actual else palabra
+            if not actual or medir(candidata) <= ancho_max:
+                actual = candidata
+            else:
+                lineas.append(actual)
+                actual = palabra
+            # Una palabra sola más ancha que la caja se corta por caracteres.
+            while len(actual) > 1 and medir(actual) > ancho_max:
+                corte = len(actual) - 1
+                while corte > 1 and medir(actual[:corte]) > ancho_max:
+                    corte -= 1
+                lineas.append(actual[:corte])
+                actual = actual[corte:]
+        lineas.append(actual)
+    return lineas
+
+
+def _componer_texto(texto: str, ancho: float, alto: float, tam_maximo: int):
+    """
+    Elige el mayor tamaño de letra (hasta `tam_maximo`) con el que el texto,
+    repartido en líneas, cabe en ancho x alto. Devuelve (líneas, tamaño
+    nominal, interlineado, margen inferior); pyHanko luego reduce el bloque
+    (SHRINK_TO_FIT) hasta el tamaño elegido o algo mayor si sobra espacio.
+    """
+    nominal = tam_maximo
+    interlineado = max(nominal + 1, round(nominal * _INTERLINEADO))
+    descendente = max(1, round(nominal * 0.25))  # espacio para letras como «g» o «p»
+    efectivo = float(nominal)
+    while True:
+        escala = efectivo / nominal
+        lineas = _ajustar_lineas(texto, max(ancho, 1) / escala, lambda s: _medir_em(s) * nominal)
+        alto_bloque = (len(lineas) * interlineado + descendente) * escala
+        if alto_bloque <= alto or efectivo <= _TAM_MINIMO:
+            return lineas, nominal, interlineado, descendente
+        efectivo -= 0.25
+
+
+def fondo_blanco_a_transparente(imagen, umbral: int = 245):
+    """Vuelve transparentes los píxeles casi blancos (fondo de iconos sin canal alfa)."""
+    from PIL import ImageChops
+
+    rgba = imagen.convert("RGBA")
+    r, g, b, a = rgba.split()
+    minimo = ImageChops.darker(ImageChops.darker(r, g), b)
+    rgba.putalpha(ImageChops.darker(a, minimo.point(lambda v: 0 if v >= umbral else 255)))
+    return rgba
+
+
+def _cargar_imagen(ruta, descripcion: str, fondo_transparente: bool = False):
+    """Imagen para pyHanko (logo o imagen de visto bueno), o ErrorFirma si no se puede leer."""
+    from PIL import Image, UnidentifiedImageError
+    from pyhanko.pdf_utils.images import PdfImage
+
+    try:
+        with Image.open(ruta) as original:
+            original.load()
+            imagen = original.copy()
+    except (OSError, UnidentifiedImageError) as e:
+        raise ErrorFirma(f"No se pudo leer la imagen del {descripcion}: {Path(ruta).name}.") from e
+    if fondo_transparente:
+        imagen = fondo_blanco_a_transparente(imagen)
+    elif imagen.mode not in ("RGB", "RGBA", "L", "LA"):
+        imagen = imagen.convert("RGBA")
+    return PdfImage(imagen)
+
+
+Rect = tuple[float, float, float, float]  # (x0, y0, x1, y1) en pt, origen abajo a la izquierda
+
+
+@dataclass
+class GeometriaSello:
+    """Zonas del sello. La interfaz (app.js) reproduce el mismo cálculo."""
+
+    area_imagen: Rect | None  # zona reservada a la imagen (None = sin imagen)
+    imagen: Rect | None  # rectángulo que ocupa la imagen (proporción conservada)
+    texto: Rect  # zona del texto; nunca se superpone con la imagen
+    alineacion_imagen: AxisAlignment  # horizontal
+    alineacion_vertical_imagen: AxisAlignment
+    alineacion_texto: AxisAlignment  # vertical: centro (firma) o arriba (visto bueno)
+
+
+def _alinear(alineacion: AxisAlignment, inicio: float, fin: float, largo: float) -> float:
+    # Igual que AxisAlignment.align de pyHanko (incluida la división entera al centrar).
+    if alineacion == AxisAlignment.ALIGN_MIN:
+        return inicio
+    if alineacion == AxisAlignment.ALIGN_MAX:
+        return fin - largo
+    return inicio + ((fin - inicio) - largo) // 2
+
+
+def _encajar(dimensiones, area: Rect, horizontal: AxisAlignment, vertical: AxisAlignment) -> Rect:
+    """Lo mismo que hace pyHanko con STRETCH_TO_FIT: escala uniforme dentro del área."""
+    ancho_img, alto_img = dimensiones
+    x0, y0, x1, y1 = area
+    escala = max(0.0, min((x1 - x0) / ancho_img, (y1 - y0) / alto_img))
+    ancho, alto = ancho_img * escala, alto_img * escala
+    izquierda = _alinear(horizontal, x0, x1, ancho)
+    abajo = _alinear(vertical, y0, y1, alto)
+    return izquierda, abajo, izquierda + ancho, abajo + alto
+
+
+def geometria_sello(tipo: str, ancho: float, alto: float, dimensiones_imagen=None) -> GeometriaSello:
+    """
+    Zonas de imagen y texto para una caja de `ancho` x `alto` pt.
+      - "firma": logo (si hay) en el 38 % izquierdo y el texto justo a su derecha.
+      - "visto_bueno": imagen arriba (55 % de la altura, opacidad 1) y el texto
+        debajo, separados: no se superponen. Sin imagen se usa la marca vectorial.
+    """
+    margen = max(2.0, min(ancho, alto) * 0.06)
+    if tipo == "visto_bueno":
+        separacion = max(1.0, alto * 0.03)
+        corte = alto * (1 - PROPORCION_IMAGEN_VB)
+        area = (margen, corte + separacion / 2, ancho - margen, alto - margen)
+        texto = (margen, margen, ancho - margen, max(margen + 1, corte - separacion / 2))
+        dimensiones = dimensiones_imagen or (100, 100)
+        # La imagen se apoya en el borde inferior de su área (justo sobre el
+        # texto); ALIGN_MIN además evita el redondeo hacia abajo del centrado.
+        return GeometriaSello(
+            area_imagen=area,
+            imagen=_encajar(dimensiones, area, ALINEACION_IMAGEN_VB, AxisAlignment.ALIGN_MIN),
+            texto=texto,
+            alineacion_imagen=ALINEACION_IMAGEN_VB,
+            alineacion_vertical_imagen=AxisAlignment.ALIGN_MIN,
+            alineacion_texto=AxisAlignment.ALIGN_MAX,
+        )
+    area = imagen = None
+    izquierda = margen
+    if dimensiones_imagen:
+        area = (margen, margen, ancho * PROPORCION_LOGO, alto - margen)
+        imagen = _encajar(dimensiones_imagen, area, AxisAlignment.ALIGN_MIN, AxisAlignment.ALIGN_MID)
+        izquierda = imagen[2] + max(margen, ancho * 0.03)
+    return GeometriaSello(
+        area_imagen=area,
+        imagen=imagen,
+        texto=(izquierda, margen, ancho - margen, alto - margen),
+        alineacion_imagen=AxisAlignment.ALIGN_MIN,
+        alineacion_vertical_imagen=AxisAlignment.ALIGN_MID,
+        alineacion_texto=AxisAlignment.ALIGN_MID,
+    )
+
+
+def _margenes(rect: Rect, ancho: float, alto: float) -> Margins:
+    return Margins(left=rect[0], right=ancho - rect[2], bottom=rect[1], top=alto - rect[3])
+
+
+def estilo_sello(
+    tipo: str, ancho: float, alto: float, texto: str, fecha_muestra: str, imagen=None
+) -> TextStampStyle:
+    """
+    Estilo pyHanko del sello para una caja de `ancho` x `alto` pt. `texto` ya
+    tiene sustituidos firmante, motivo y lugar, y conserva `%(ts)s` para que
+    pyHanko escriba la hora de la firma con el formato del tipo. `fecha_muestra`
+    (mismo formato) solo se usa para medir y repartir las líneas. `imagen` es
+    el logo ("firma") o la imagen de visto bueno (si falta, marca vectorial).
+    """
+    fondo = imagen
+    if tipo == "visto_bueno" and fondo is None:
+        fondo = _marca_visto_bueno()
+    dimensiones = (fondo.box.width, fondo.box.height) if fondo is not None else None
+    g = geometria_sello(tipo, ancho, alto, dimensiones)
+
+    area_ancho = g.texto[2] - g.texto[0]
+    area_alto = g.texto[3] - g.texto[1]
+    muestra = texto.replace("%(ts)s", fecha_muestra)
+    lineas, nominal, interlineado, descendente = _componer_texto(muestra, area_ancho, area_alto, _TAM_MAXIMO[tipo])
+    # Texto literal para pyHanko: se escapan los «%» y se repone la fecha.
+    literal = "\n".join(lineas).replace("%", "%%").replace(fecha_muestra.replace("%", "%%"), "%(ts)s")
+
+    opciones = {}
+    if fondo is not None:
+        opciones = {
+            "background": fondo,
+            "background_opacity": 1.0,
+            "background_layout": SimpleBoxLayoutRule(
+                x_align=g.alineacion_imagen,
+                y_align=g.alineacion_vertical_imagen,
+                margins=_margenes(g.area_imagen, ancho, alto),
+                inner_content_scaling=InnerScaling.STRETCH_TO_FIT,
+            ),
+        }
+    return TextStampStyle(
+        stamp_text=literal,
+        timestamp_format=FORMATOS_FECHA[tipo],
+        border_width=0,
+        text_box_style=TextBoxStyle(
+            font=_fuente()[0],
+            font_size=nominal,
+            leading=interlineado,
+            text_color=(0, 0, 0),
+            box_layout_rule=SimpleBoxLayoutRule(
+                x_align=AxisAlignment.ALIGN_MIN,
+                y_align=AxisAlignment.ALIGN_MIN,
+                margins=Margins(bottom=descendente),
+                inner_content_scaling=InnerScaling.NO_SCALING,
+            ),
+        ),
+        inner_content_layout=SimpleBoxLayoutRule(
+            x_align=AxisAlignment.ALIGN_MIN,
+            y_align=g.alineacion_texto,
+            margins=_margenes(g.texto, ancho, alto),
+            inner_content_scaling=InnerScaling.SHRINK_TO_FIT,
+        ),
+        **opciones,
+    )
+
+
+def _misma_ruta(a, b) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return Path(a).resolve() == Path(b).resolve()
+
+
+def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma | None = None) -> ResultadoFirma:
+    """
+    Firma `entrada` y escribe `salida`. `signer` es un `pyhanko` Signer (p. ej.
+    `dnie_cng.FirmanteCNG`); con el DNIe, Windows pide el PIN durante este paso.
+    El archivo de salida solo se escribe si la firma termina bien.
+    """
+    opciones = opciones or OpcionesFirma()
+    if opciones.paginas not in PAGINAS_VALIDAS:
+        raise ErrorFirma(f"Opción de páginas desconocida: {opciones.paginas!r}.")
+    if _misma_ruta(entrada, salida):
+        raise ErrorFirma("El archivo de salida debe ser distinto del original.")
+
+    tipo = opciones.tipo
+    if tipo not in TIPOS_SELLO:
+        raise ErrorFirma(f"Tipo de sello desconocido: {tipo!r}.")
+    motivo = (opciones.motivo or "").strip() or MOTIVOS_PREDETERMINADOS[tipo]
+    lugar = (opciones.lugar or "").strip()
+    plantilla = opciones.texto_sello or PLANTILLAS_SELLO[tipo]
+    parametros = {"firmante": firmante, "motivo": motivo, "lugar": lugar}
+    _validar_plantilla(plantilla, parametros)
+    # %(ts)s queda pendiente: pyHanko escribe la hora de la firma en el campo.
+    texto = plantilla % {**parametros, "ts": "%(ts)s"}
+    imagen = None
+    if tipo == "firma" and opciones.logo:
+        imagen = _cargar_imagen(opciones.logo, "logo")
+    elif tipo == "visto_bueno" and opciones.imagen_vb:
+        # El icono suele venir con fondo blanco sin alfa: se quita para que no se vea un recuadro.
+        imagen = _cargar_imagen(opciones.imagen_vb, "visto bueno", fondo_transparente=True)
+    fecha = fecha_sello(tipo, datetime.now().astimezone())
+
+    estilos: dict[tuple[float, float], TextStampStyle] = {}
+
+    def estilo_para(ancho: float, alto: float) -> TextStampStyle:
+        clave = (round(ancho, 2), round(alto, 2))
+        if clave not in estilos:
+            estilos[clave] = estilo_sello(tipo, clave[0], clave[1], texto, fecha, imagen)
+        return estilos[clave]
+
+    with open(entrada, "rb") as inf:
+        writer = IncrementalPdfFileWriter(inf, strict=False)
+        _desbloquear(writer.prev)
+        if writer.prev.encrypted:
+            writer.encrypt("")
+        total = _total_paginas(writer)
+        if total < 1:
+            raise ErrorFirma("El PDF no tiene páginas.")
+        pagina_firma = opciones.pagina_firma if opciones.pagina_firma >= 0 else total + opciones.pagina_firma
+        if not 0 <= pagina_firma < total:
+            raise ErrorFirma(f"La página de firma {pagina_firma + 1} no existe (el PDF tiene {total}).")
+
+        firmas_previas = len(writer.prev.embedded_signatures)
+        if _nivel_docmdp(writer.prev) == fields.MDPPerm.NO_CHANGES.value:
+            raise ErrorFirma(
+                "El documento está certificado y no permite ningún cambio, ni siquiera "
+                "nuevas firmas. No se puede firmar sin invalidar la certificación."
+            )
+        modo = "solo_campo" if firmas_previas else "contenido"
+
+        paginas = [pagina_firma]
+        if modo == "contenido" and opciones.paginas == "todas":
+            paginas = list(range(total))
+            # Un mismo sello (XObject) se reutiliza en las páginas del mismo tamaño.
+            sellos: dict[tuple[float, float], TextStamp] = {}
+            for indice in paginas:
+                if indice == pagina_firma:
+                    continue
+                x1, y1, x2, y2 = caja_absoluta(opciones.caja, vista_de_pagina(writer, indice))
+                _asegurar_contenido(writer, indice)
+                clave = (round(x2 - x1, 2), round(y2 - y1, 2))
+                if clave not in sellos:
+                    sellos[clave] = TextStamp(
+                        writer,
+                        estilo_para(*clave),
+                        text_params={"ts": fecha},
+                        box=BoxConstraints(width=clave[0], height=clave[1]),
+                    )
+                sellos[clave].apply(indice, x1, y1)
+
+        campo = _nombre_campo_libre(writer, opciones.nombre_campo)
+        caja_campo = caja_absoluta(opciones.caja, vista_de_pagina(writer, pagina_firma))
+        fields.append_signature_field(
+            writer, fields.SigFieldSpec(sig_field_name=campo, on_page=pagina_firma, box=caja_campo)
+        )
+
+        meta = signers.PdfSignatureMetadata(
+            field_name=campo,
+            md_algorithm="sha256",
+            subfilter=fields.SigSeedSubFilter.PADES,
+            reason=motivo,
+            location=lugar or None,
+        )
+        estilo_campo = estilo_para(caja_campo[2] - caja_campo[0], caja_campo[3] - caja_campo[1])
+        pdf_signer = signers.PdfSigner(meta, signer=signer, stamp_style=estilo_campo)
+        buffer = io.BytesIO()
+        pdf_signer.sign_pdf(writer, output=buffer)
+
+    Path(salida).write_bytes(buffer.getvalue())
+    return ResultadoFirma(
+        salida=str(salida),
+        total_paginas=total,
+        paginas_selladas=paginas,
+        pagina_firma=pagina_firma,
+        modo=modo,
+        firmas_previas=firmas_previas,
+        campo=campo,
+    )

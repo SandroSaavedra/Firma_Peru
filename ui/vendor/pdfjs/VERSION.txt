@@ -1,0 +1,1 @@
+pdfjs-dist 6.4.299 (npm pack). build/pdf.min.mjs, build/pdf.worker.min.mjs, standard_fonts/, cmaps/, wasm/, iccs/, LICENSE (Apache-2.0).

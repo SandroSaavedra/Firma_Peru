@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# PyInstaller output (rebuild with build.ps1)
+build/
+dist/
+
+# Local tooling
+.codegraph/
