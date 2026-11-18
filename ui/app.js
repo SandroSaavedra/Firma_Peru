@@ -1157,7 +1157,7 @@ function ajustarTextoSello() {
       const ancho = img.naturalWidth * escala;
       const alto = img.naturalHeight * escala;
       Object.assign(img.style, { width: px(ancho), height: px(alto), left: px(margen), top: px((H - alto) / 2) });
-      izquierda = margen + ancho + Math.max(margen, W * 0.03);
+      izquierda = margen + ancho + margen;
     }
     area = { izquierda, derecha: margen, arriba: margen, abajo: margen };
   }

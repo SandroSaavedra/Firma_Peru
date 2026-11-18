@@ -19,6 +19,7 @@ import base64
 import binascii
 import ctypes
 import hashlib
+import io
 import json
 import logging
 import mimetypes
@@ -47,6 +48,7 @@ from firma_pdf import (
     analizar_pdf,
     firmar_pdf,
     fondo_blanco_a_transparente,
+    recortar_margenes,
 )
 from validacion import validar_pdf
 
@@ -337,11 +339,24 @@ def ruta_logo_guardado() -> Path | None:
     return ruta_imagen_guardada("logo")
 
 
-def _imagen_para_interfaz(ruta: Path | None) -> dict | None:
+def _imagen_para_interfaz(ruta: Path | None, clave: str = "imagen_vb") -> dict | None:
+    """
+    Imagen para la vista previa. Al logo se le recortan los márgenes igual que
+    al firmar, para que la vista previa coincida con el sello del PDF.
+    """
     if ruta is None:
         return None
     try:
-        datos = ruta.read_bytes()
+        if clave == "logo":
+            from PIL import Image
+
+            with Image.open(ruta) as imagen:
+                imagen.load()
+                buffer = io.BytesIO()
+                recortar_margenes(imagen).save(buffer, "PNG")
+            datos = buffer.getvalue()
+        else:
+            datos = ruta.read_bytes()
     except OSError:
         return None
     return {"nombre": ruta.name, "datos": "data:image/png;base64," + base64.b64encode(datos).decode("ascii")}
@@ -865,7 +880,7 @@ class Api:
         return {
             "ok": True,
             "tipo": config["tipo"],
-            "logo": _imagen_para_interfaz(ruta_imagen_guardada("logo")),
+            "logo": _imagen_para_interfaz(ruta_imagen_guardada("logo"), "logo"),
             "imagen_vb": _imagen_para_interfaz(ruta_imagen_guardada("imagen_vb")),
             "motivos": dict(MOTIVOS_PREDETERMINADOS),
         }
@@ -898,7 +913,7 @@ class Api:
         except OSError as e:
             logger.warning("No se pudo guardar la imagen: %s", e)
             return {"ok": False, "mensaje": "No se pudo guardar la imagen en la carpeta de configuración."}
-        return {"ok": True, clave: _imagen_para_interfaz(destino)}
+        return {"ok": True, clave: _imagen_para_interfaz(destino, clave)}
 
     def _quitar_imagen(self, clave: str) -> dict:
         try:

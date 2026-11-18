@@ -413,6 +413,21 @@ def fondo_blanco_a_transparente(imagen, umbral: int = 245):
     return rgba
 
 
+def recortar_margenes(imagen, umbral: int = 245):
+    """
+    Recorta el borde casi blanco o transparente que rodea al contenido, para que
+    el logo quede pegado al texto. Una imagen en blanco se devuelve sin cambios.
+    """
+    rgba = imagen.convert("RGBA")
+    r, g, b, a = rgba.split()
+    from PIL import ImageChops
+
+    minimo = ImageChops.darker(ImageChops.darker(r, g), b)
+    visible = ImageChops.darker(a, minimo.point(lambda v: 0 if v >= umbral else 255))
+    caja = visible.getbbox()
+    return imagen.crop(caja) if caja else imagen
+
+
 def _cargar_imagen(ruta, descripcion: str, fondo_transparente: bool = False):
     """Imagen para pyHanko (logo o imagen de visto bueno), o ErrorFirma si no se puede leer."""
     from PIL import Image, UnidentifiedImageError
@@ -426,8 +441,10 @@ def _cargar_imagen(ruta, descripcion: str, fondo_transparente: bool = False):
         raise ErrorFirma(f"No se pudo leer la imagen del {descripcion}: {Path(ruta).name}.") from e
     if fondo_transparente:
         imagen = fondo_blanco_a_transparente(imagen)
-    elif imagen.mode not in ("RGB", "RGBA", "L", "LA"):
-        imagen = imagen.convert("RGBA")
+    else:
+        imagen = recortar_margenes(imagen)
+        if imagen.mode not in ("RGB", "RGBA", "L", "LA"):
+            imagen = imagen.convert("RGBA")
     return PdfImage(imagen)
 
 
@@ -495,7 +512,7 @@ def geometria_sello(tipo: str, ancho: float, alto: float, dimensiones_imagen=Non
     if dimensiones_imagen:
         area = (margen, margen, ancho * PROPORCION_LOGO, alto - margen)
         imagen = _encajar(dimensiones_imagen, area, AxisAlignment.ALIGN_MIN, AxisAlignment.ALIGN_MID)
-        izquierda = imagen[2] + max(margen, ancho * 0.03)
+        izquierda = imagen[2] + margen
     return GeometriaSello(
         area_imagen=area,
         imagen=imagen,

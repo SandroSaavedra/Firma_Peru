@@ -204,6 +204,27 @@ def test_geometria_firma_logo_a_la_izquierda_sin_superponer(dimensiones):
     assert g.imagen[2] <= 260 * firma_pdf.PROPORCION_LOGO + 0.01
 
 
+def test_geometria_firma_texto_pegado_al_logo():
+    g = firma_pdf.geometria_sello("firma", 260, 75, (1266, 873))
+    margen = max(2.0, 75 * 0.06)
+    assert g.texto[0] - g.imagen[2] == pytest.approx(margen)
+
+
+@pytest.mark.parametrize("fondo", [(255, 255, 255, 255), (255, 255, 255, 0), (250, 250, 250, 255)])
+def test_recortar_margenes_quita_el_borde_blanco_o_transparente(fondo):
+    imagen = Image.new("RGBA", (200, 100), fondo)
+    for x in range(30, 170):
+        for y in range(10, 80):
+            imagen.putpixel((x, y), (200, 0, 0, 255))
+    recortada = firma_pdf.recortar_margenes(imagen)
+    assert recortada.size == (140, 70)
+
+
+def test_recortar_margenes_imagen_en_blanco_no_cambia():
+    imagen = Image.new("RGB", (50, 40), (255, 255, 255))
+    assert firma_pdf.recortar_margenes(imagen).size == (50, 40)
+
+
 def test_logo_inexistente_se_rechaza(tmp_path, pdf_multipagina, firmante):
     with pytest.raises(ErrorFirma, match="logo"):
         firmar_pdf(
