@@ -86,6 +86,29 @@ def test_salida_no_sobrescribe_archivos(tmp_path):
     assert app.ruta_salida_predeterminada(entrada).name == "doc_firmado (2).pdf"
 
 
+def test_salida_de_visto_bueno_termina_en_vb(tmp_path):
+    entrada = tmp_path / "doc.pdf"
+    assert app.ruta_salida_predeterminada(entrada, "visto_bueno").name == "doc_vb.pdf"
+    (tmp_path / "doc_vb.pdf").write_bytes(b"x")
+    assert app.ruta_salida_predeterminada(entrada, "visto_bueno").name == "doc_vb (2).pdf"
+    assert app.ruta_salida_predeterminada(entrada, "firma").name == "doc_firmado.pdf"
+
+
+def test_firmar_visto_bueno_guarda_con_sufijo_vb(api, pdf_multipagina, tmp_path):
+    info = api.abrir_ruta(str(pdf_multipagina))
+    assert info["salidas_sugeridas"]["firma"].endswith("entrada_firmado.pdf")
+    assert info["salidas_sugeridas"]["visto_bueno"].endswith("entrada_vb.pdf")
+
+    ventana = VentanaFalsa(str(tmp_path / "elegido.pdf"))
+    api._asignar_ventana(ventana)
+    assert api.elegir_destino("visto_bueno")["ok"]
+    assert ventana.dialogos[0][1]["save_filename"] == "entrada_vb.pdf"
+
+    r = api.firmar({"tipo": "visto_bueno", "paginas": "todas"})
+    assert r["ok"], r
+    assert r["nombre"] == "entrada_vb.pdf"
+
+
 def test_error_de_firma_se_devuelve_como_dato(api, pdf_multipagina, monkeypatch):
     def _cancelado(self, resumen, alg):
         raise app.ErrorCNG("NCryptSignHash falló (0x8010006E) cancelado")

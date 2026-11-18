@@ -1226,6 +1226,7 @@ function aplicarTipo(tipo, { cambiarCaja = false, guardar = false } = {}) {
   el.txtMotivo.value = estado.motivos[tipo];
   el.txtMotivo.placeholder = estado.motivos[tipo];
   if (cambiarCaja) cajaDelTipo(tipo);
+  if (estado.info) actualizarDestino(); // el nombre sugerido cambia con el tipo (_firmado / _vb)
   if (guardar) {
     llamar("guardar_tipo", tipo).then((r) => {
       if (!r.ok) aviso(r.mensaje, true);
@@ -1324,7 +1325,8 @@ function actualizarDestino() {
   } else if (el.chkGuardarComo.checked) {
     el.txtDestino.textContent = "Se le preguntará dónde guardar al firmar.";
   } else {
-    const nombre = estado.info.salida_sugerida.split(/[\\/]/).pop();
+    const sugeridas = estado.info.salidas_sugeridas || {};
+    const nombre = (sugeridas[estado.tipo] || estado.info.salida_sugerida).split(/[\\/]/).pop();
     el.txtDestino.textContent = `Se guardará como «${nombre}» junto al original.`;
   }
 }
@@ -1421,7 +1423,7 @@ async function firmar() {
   }
   let destino = null;
   if (el.chkGuardarComo.checked || !estado.info.ruta) {
-    const r = await llamar("elegir_destino");
+    const r = await llamar("elegir_destino", estado.tipo);
     if (!r.ok) {
       if (!r.cancelado) aviso(r.mensaje, true);
       return;

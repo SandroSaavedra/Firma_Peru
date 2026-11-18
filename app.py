@@ -161,13 +161,20 @@ def examinar_pdf(archivo: Path):
         raise ErrorFirma(f"No se pudo leer el PDF: {e}") from e
 
 
-def ruta_salida_predeterminada(entrada: Path) -> Path:
-    """`<nombre>_firmado.pdf` junto al original, sin sobrescribir archivos existentes."""
-    base = entrada.with_name(f"{entrada.stem}_firmado.pdf")
+SUFIJOS_SALIDA = {"firma": "_firmado", "visto_bueno": "_vb"}
+
+
+def ruta_salida_predeterminada(entrada: Path, tipo: str = "firma") -> Path:
+    """
+    `<nombre>_firmado.pdf` (o `<nombre>_vb.pdf` para el visto bueno) junto al
+    original, sin sobrescribir archivos existentes.
+    """
+    sufijo = SUFIJOS_SALIDA.get(tipo, SUFIJOS_SALIDA["firma"])
+    base = entrada.with_name(f"{entrada.stem}{sufijo}.pdf")
     n = 2
     candidata = base
     while candidata.exists():
-        candidata = entrada.with_name(f"{entrada.stem}_firmado ({n}).pdf")
+        candidata = entrada.with_name(f"{entrada.stem}{sufijo} ({n}).pdf")
         n += 1
     return candidata
 
@@ -533,6 +540,7 @@ class Api:
             "docmdp": item["docmdp"],
             "rotaciones": list(item["rotaciones"]),
             "salida_sugerida": str(self._salida_sugerida()),
+            "salidas_sugeridas": {t: str(self._salida_sugerida(t)) for t in SUFIJOS_SALIDA},
         }
 
     # --- cola de documentos ---------------------------------------------------------
@@ -693,11 +701,12 @@ class Api:
             actual = self._retirar(item) or actual
         return {"ok": True, "actual_quitado": actual, "cola": self._cola_publica()}
 
-    def _salida_sugerida(self) -> Path:
+    def _salida_sugerida(self, tipo: str | None = None) -> Path:
         """Junto al original; si el PDF llegó como bytes, en Descargas."""
+        tipo = tipo or leer_config()["tipo"]
         if self._pdf["ruta"]:
-            return ruta_salida_predeterminada(Path(self._pdf["ruta"]))
-        return ruta_salida_predeterminada(carpeta_descargas() / self._pdf["nombre"])
+            return ruta_salida_predeterminada(Path(self._pdf["ruta"]), tipo)
+        return ruta_salida_predeterminada(carpeta_descargas() / self._pdf["nombre"], tipo)
 
     # --- documento recibido como bytes (arrastrar y soltar sin ruta) ----------
 
@@ -825,11 +834,11 @@ class Api:
             "fin": inicio + len(trozo) >= len(datos),
         }
 
-    def elegir_destino(self) -> dict:
-        """Diálogo «Guardar como» para el PDF firmado."""
+    def elegir_destino(self, tipo: str | None = None) -> dict:
+        """Diálogo «Guardar como» para el PDF firmado; el nombre sugerido depende del tipo de sello."""
         if self._ventana is None or not self._pdf:
             return {"ok": False, "mensaje": "Abra primero un PDF."}
-        sugerida = self._salida_sugerida()
+        sugerida = self._salida_sugerida(tipo if tipo in SUFIJOS_SALIDA else None)
         seleccion = self._ventana.create_file_dialog(
             webview.FileDialog.SAVE,
             directory=str(sugerida.parent),
@@ -941,7 +950,7 @@ class Api:
             preparar_imagenes_iniciales()
             opts = self._opciones_firma(opciones, opciones.get("caja"), int(opciones.get("pagina_firma", -1)))
             destino = opciones.get("destino")
-            salida = Path(destino) if destino else ruta_salida_predeterminada(entrada)
+            salida = Path(destino) if destino else ruta_salida_predeterminada(entrada, opts.tipo)
             if salida.suffix.lower() != ".pdf":
                 raise ErrorFirma("El archivo de salida debe tener extensión .pdf.")
 
@@ -1052,9 +1061,9 @@ class Api:
         pagina_firma = -1 if pagina is None else min(max(int(pagina), 0), item["paginas"] - 1)
         opts = self._opciones_firma(opciones, ajuste.get("caja") or opciones.get("caja"), pagina_firma)
         if carpeta is not None and (en_carpeta or not item["ruta"]):
-            salida = ruta_salida_predeterminada(carpeta / nombre_seguro(item["nombre"]))
+            salida = ruta_salida_predeterminada(carpeta / nombre_seguro(item["nombre"]), opts.tipo)
         else:
-            salida = ruta_salida_predeterminada(Path(item["ruta"]))
+            salida = ruta_salida_predeterminada(Path(item["ruta"]), opts.tipo)
         return firmar_pdf(Path(item["archivo"]), salida, firmante, titular, opts)
 
     def _firmar_lote(self, items: list[dict], opciones: dict, carpeta: Path | None, en_carpeta: bool) -> dict:
