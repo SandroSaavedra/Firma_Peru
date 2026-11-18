@@ -19,7 +19,7 @@ const TIPOS = {
     tamMaximo: 9,
     tamano: { ancho: 160, alto: 40 },
     posicion: { x: 400 / 595, y: 30 / 842 },
-    ayuda: "Su logo a la izquierda y los datos de la firma a la derecha.",
+    ayuda: "Logo a la izquierda y los datos de la firma a la derecha.",
   },
   visto_bueno: {
     plantilla: "Firmado digitalmente por\n{firmante}\nMotivo: {motivo}\nFecha: {fecha}",
@@ -1235,13 +1235,11 @@ function aplicarTipo(tipo, { cambiarCaja = false, guardar = false } = {}) {
   actualizarVistaPrevia();
 }
 
-// Selectores de imagen: logo («Firma»; se puede cambiar pero no quitar) e
-// imagen de arriba («Visto bueno»; `quitar` es su botón «Quitar imagen»).
+// Imágenes del sello: logo («Firma»; `fija`: es siempre el logo inicial del
+// programa, solo se muestra) e imagen de arriba («Visto bueno»; se elige y
+// `quitar` es su botón «Quitar imagen»).
 const SELECTORES = {
-  logo: {
-    prefijo: "logo", sello: "sello-logo", api: "logo", nombre: "logo",
-    elegir: "Elegir logo…", cambiar: "Cambiar logo…", guardado: "Logo guardado. Se usará en sus próximas firmas.",
-  },
+  logo: { prefijo: "logo", sello: "sello-logo", fija: true },
   imagen_vb: {
     prefijo: "imagen-vb", sello: "sello-icono", api: "imagen_vb", nombre: "imagen", quitar: "btn-quitar-imagen-vb",
     elegir: "Elegir imagen…", cambiar: "Cambiar imagen…",
@@ -1259,7 +1257,7 @@ function mostrarImagen(clave, imagen) {
   $(`${c.prefijo}-vacio`).toggleAttribute("hidden", hay);
   $(`${c.prefijo}-vista`).classList.toggle("con-logo", hay);
   if (c.quitar) $(c.quitar).hidden = !hay;
-  $(`btn-${c.prefijo}-texto`).textContent = hay ? c.cambiar : c.elegir;
+  if (!c.fija) $(`btn-${c.prefijo}-texto`).textContent = hay ? c.cambiar : c.elegir;
   if (hay) {
     vista.src = imagen.datos;
     sello.src = imagen.datos;
@@ -2086,7 +2084,7 @@ function iniciar() {
   el.selMotivo.addEventListener("change", actualizarVistaPrevia);
   el.txtLugar.addEventListener("input", () => guardarPreferencia("lugar", el.txtLugar.value));
   for (const [clave, c] of Object.entries(SELECTORES)) {
-    $(`btn-${c.prefijo}`).addEventListener("click", () => elegirImagen(clave));
+    if (!c.fija) $(`btn-${c.prefijo}`).addEventListener("click", () => elegirImagen(clave));
     if (c.quitar) $(c.quitar).addEventListener("click", () => quitarImagen(clave));
     $(c.sello).addEventListener("load", ajustarTextoSello);
   }

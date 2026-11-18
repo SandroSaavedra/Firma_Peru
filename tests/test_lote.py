@@ -453,3 +453,30 @@ def test_lote_sin_pendientes_o_ya_en_curso(api, cng, tmp_path):
         assert api.firmar_lote({})["mensaje"] == "Ya hay una firma en curso."
     finally:
         api._firmando.release()
+
+
+def test_lote_usa_el_logo_inicial_aunque_haya_uno_guardado(api, cng, tmp_path, monkeypatch):
+    """El logo no se puede cambiar: un logo.png elegido con versiones anteriores se ignora."""
+    from PIL import Image
+
+    azul, verde = (30, 60, 200), (10, 150, 10)
+    Image.new("RGB", (300, 100), azul).save(tmp_path / "inicial.png")
+    monkeypatch.setattr(app, "LOGO_INICIAL", tmp_path / "inicial.png")
+    carpeta = app.carpeta_config()
+    carpeta.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (300, 100), verde).save(carpeta / "logo.png")
+    (carpeta / "config.json").write_text(json.dumps({"tipo": "firma", "logo": "logo.png"}), encoding="utf-8")
+
+    colores = []
+    firmar_pdf = app.firmar_pdf
+
+    def _firmar_pdf(entrada, salida, firmante, titular, opciones):
+        with Image.open(opciones.logo) as logo:
+            colores.append(logo.convert("RGB").getpixel((0, 0)))
+        return firmar_pdf(entrada, salida, firmante, titular, opciones)
+
+    monkeypatch.setattr(app, "firmar_pdf", _firmar_pdf)
+    api.agregar_rutas([str(r) for r in _pdfs(tmp_path / "docs", "uno.pdf", "dos.pdf")])
+    r = api.firmar_lote({"caja": CAJA, "tipo": "firma"})
+    assert r["ok"] and len(r["firmados"]) == 2, r
+    assert colores == [azul, azul]

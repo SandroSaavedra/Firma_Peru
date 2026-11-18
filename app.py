@@ -61,18 +61,17 @@ VIDA_SUBIDA = 120  # segundos sin actividad tras los cuales se descarta una subi
 TAM_MAXIMO_LOGO = 20 * 1024 * 1024  # imagen (logo o visto bueno) que se acepta
 LADO_MAXIMO_LOGO = 800  # px: la copia guardada se reduce para no inflar los PDF
 # Imágenes que el usuario deja junto al programa (no se distribuyen con la
-# aplicación). Cada una se copia a la configuración la primera vez.
+# aplicación).
+# Logo del sello «Firma»: siempre este archivo; no se puede cambiar ni quitar.
 LOGO_INICIAL = Path("src") / "Emblema peruano con firma digital.png"
-# Logo inicial de versiones anteriores: si la copia guardada sigue siendo la de
-# este archivo (el usuario no la cambió), se reemplaza por LOGO_INICIAL.
-LOGO_INICIAL_ANTERIOR = Path("src") / "firma_digital_vivienda.png"
+NOMBRE_LOGO = "logo.png"  # copia reducida de LOGO_INICIAL en la carpeta de configuración
+# Imagen de visto bueno inicial: se copia a la configuración la primera vez.
 IMAGEN_VB_INICIAL = Path("src") / "Icono circular con marca roja.png"
 # Clave en config.json -> (archivo de la copia, constante con el original, bandera «ya se aplicó»).
+# El logo no está aquí: no se elige ni se guarda en config.json (ver `preparar_logo`).
 IMAGENES = {
-    "logo": ("logo.png", "LOGO_INICIAL", "logo_inicial_aplicado"),
     "imagen_vb": ("imagen_vb.png", "IMAGEN_VB_INICIAL", "imagen_vb_inicial_aplicada"),
 }
-NOMBRE_LOGO = IMAGENES["logo"][0]
 
 # Códigos de Windows / tarjeta inteligente frecuentes, con mensaje para el usuario.
 _MENSAJES_CNG = {
@@ -278,51 +277,44 @@ def ruta_imagen_inicial(clave: str) -> Path:
 
 
 def ruta_logo_inicial() -> Path:
-    return ruta_imagen_inicial("logo")
+    return carpeta_aplicacion() / LOGO_INICIAL
 
 
-def actualizar_logo_inicial_anterior():
+def preparar_logo() -> Path | None:
     """
-    Las versiones anteriores copiaban LOGO_INICIAL_ANTERIOR como logo. Si la
-    copia guardada sigue siendo exactamente esa (mismos píxeles que produciría
-    `copiar_imagen`), se reemplaza por LOGO_INICIAL. Un logo elegido por el
-    usuario no se toca, y tampoco si el archivo anterior ya no está junto al
-    programa (no hay con qué comparar). Si no hay logo guardado, lo repone
-    `preparar_imagenes_iniciales`.
+    Logo del sello «Firma»: siempre LOGO_INICIAL, junto al programa; no se
+    puede cambiar ni quitar. Se guarda su copia reducida (`imagen_reducida`)
+    en la carpeta de configuración como NOMBRE_LOGO, encima de cualquier logo
+    elegido con versiones anteriores (que ya no se usa). Devuelve la ruta que
+    se usa al firmar y en la vista previa:
+      - None si el logo inicial falta o no es una imagen: el sello va sin
+        logo y queda un aviso en el registro.
+      - El original si no se puede escribir la copia.
     """
-    guardado = ruta_imagen_guardada("logo")
-    anterior = carpeta_aplicacion() / LOGO_INICIAL_ANTERIOR
-    actual = ruta_logo_inicial()
-    if guardado is None or not anterior.is_file() or not actual.is_file():
-        return
+    origen = ruta_logo_inicial()
+    if not origen.is_file():
+        logger.warning("No se encontró el logo %s; el sello «Firma» irá sin logo.", origen)
+        return None
     try:
-        if not es_copia_de(guardado, anterior, "logo"):
-            return
-        destino = copiar_imagen(actual, "logo")
-        guardar_config({**leer_config(), "logo": destino.name, IMAGENES["logo"][2]: True})
-        logger.info("Se reemplazó el logo inicial anterior por %s.", actual.name)
-    except (ErrorFirma, OSError) as e:
-        logger.warning("No se pudo actualizar el logo inicial anterior: %s", e)
+        return copiar_imagen(origen, "logo")
+    except ErrorFirma as e:
+        logger.warning("No se pudo usar el logo %s (%s); el sello «Firma» irá sin logo.", origen, e)
+        return None
+    except OSError as e:
+        logger.warning("No se pudo guardar la copia del logo (%s); se usa el original.", e)
+        return origen
 
 
 def preparar_imagenes_iniciales():
     """
-    Copia a la configuración la imagen inicial de `src/` (si existe junto al
-    programa; el original no se toca):
-      - Logo: siempre que no haya un logo guardado. El logo se puede cambiar
-        pero no quitar, así que uno quitado con versiones anteriores (que
-        tenían «Quitar logo») vuelve a ser el inicial.
-      - Imagen de visto bueno: una sola vez; si el usuario la quita o la
-        cambia, se respeta.
-    Antes, el logo inicial anterior sin cambios se actualiza.
+    Copia a la configuración, una sola vez, la imagen de visto bueno inicial
+    de `src/` (si existe junto al programa; el original no se toca). Si el
+    usuario la quita o la cambia, se respeta. El logo no pasa por aquí: ver
+    `preparar_logo`.
     """
-    actualizar_logo_inicial_anterior()
     for clave, (_, _, bandera) in IMAGENES.items():
         config = leer_config()
-        if clave == "logo":
-            if ruta_imagen_guardada(clave) is not None:
-                continue
-        elif config[bandera] or config[clave]:
+        if config[bandera] or config[clave]:
             continue
         origen = ruta_imagen_inicial(clave)
         if not origen.is_file():
@@ -335,16 +327,12 @@ def preparar_imagenes_iniciales():
 
 
 def ruta_imagen_guardada(clave: str) -> Path | None:
-    """Copia de la imagen (`logo` o `imagen_vb`) en la carpeta de configuración, si existe."""
+    """Copia de la imagen elegida (`imagen_vb`) en la carpeta de configuración, si existe."""
     nombre = leer_config()[clave]
     if not nombre:
         return None
     ruta = carpeta_config() / Path(nombre).name  # solo archivos dentro de la carpeta
     return ruta if ruta.is_file() else None
-
-
-def ruta_logo_guardado() -> Path | None:
-    return ruta_imagen_guardada("logo")
 
 
 def _imagen_para_interfaz(ruta: Path | None, clave: str = "imagen_vb") -> dict | None:
@@ -395,24 +383,10 @@ def imagen_reducida(origen: Path, clave: str = "logo"):
     return copia
 
 
-def es_copia_de(guardada: Path, origen: Path, clave: str = "logo") -> bool:
-    """
-    True si `guardada` tiene los mismos píxeles que la copia que `copiar_imagen`
-    haría de `origen`. Se comparan píxeles y no bytes, para no depender del
-    codificador PNG.
-    """
-    from PIL import Image
-
-    esperada = imagen_reducida(origen, clave)
-    with Image.open(guardada) as imagen:
-        imagen.load()
-        return (imagen.mode, imagen.size) == (esperada.mode, esperada.size) and imagen.tobytes() == esperada.tobytes()
-
-
 def copiar_imagen(origen: Path, clave: str = "logo") -> Path:
     """Guarda en la carpeta de configuración la copia PNG de `imagen_reducida`."""
     copia = imagen_reducida(origen, clave)
-    archivo = IMAGENES[clave][0]
+    archivo = NOMBRE_LOGO if clave == "logo" else IMAGENES[clave][0]
     carpeta = carpeta_config()
     carpeta.mkdir(parents=True, exist_ok=True)
     destino = carpeta / archivo
@@ -420,10 +394,6 @@ def copiar_imagen(origen: Path, clave: str = "logo") -> Path:
     copia.save(temporal, "PNG")
     os.replace(temporal, destino)
     return destino
-
-
-def copiar_logo(origen: Path) -> Path:
-    return copiar_imagen(origen, "logo")
 
 
 def motivo_permitido(tipo: str, motivo) -> str | None:
@@ -892,13 +862,17 @@ class Api:
     # --- tipo de sello, logo y configuración ------------------------------------
 
     def obtener_config(self) -> dict:
-        """Último tipo de sello, imágenes guardadas (vista previa) y motivos de cada tipo (el primero, el predeterminado)."""
+        """
+        Último tipo de sello, imágenes para la vista previa (el logo fijo y la
+        imagen de visto bueno guardada) y motivos de cada tipo (el primero, el
+        predeterminado).
+        """
         preparar_imagenes_iniciales()
         config = leer_config()
         return {
             "ok": True,
             "tipo": config["tipo"],
-            "logo": _imagen_para_interfaz(ruta_imagen_guardada("logo"), "logo"),
+            "logo": _imagen_para_interfaz(preparar_logo(), "logo"),
             "imagen_vb": _imagen_para_interfaz(ruta_imagen_guardada("imagen_vb")),
             "motivos": {tipo: list(motivos) for tipo, motivos in MOTIVOS_POR_TIPO.items()},
         }
@@ -914,7 +888,10 @@ class Api:
         return {"ok": True}
 
     def _elegir_imagen(self, clave: str) -> dict:
-        """Diálogo para elegir una imagen; se guarda una copia en la carpeta de configuración."""
+        """
+        Diálogo para elegir la imagen de visto bueno; se guarda una copia en la
+        carpeta de configuración. El logo no se elige: es siempre LOGO_INICIAL.
+        """
         if self._ventana is None:
             return {"ok": False, "mensaje": "La ventana no está disponible."}
         seleccion = self._ventana.create_file_dialog(
@@ -934,7 +911,7 @@ class Api:
         return {"ok": True, clave: _imagen_para_interfaz(destino, clave)}
 
     def _quitar_imagen(self, clave: str) -> dict:
-        """Solo para la imagen de visto bueno: el logo se puede cambiar pero no quitar."""
+        """Solo para la imagen de visto bueno: el logo no se puede cambiar ni quitar."""
         try:
             ruta = ruta_imagen_guardada(clave)
             if ruta is not None:
@@ -945,9 +922,6 @@ class Api:
             logger.warning("No se pudo quitar la imagen: %s", e)
             return {"ok": False, "mensaje": "No se pudo quitar la imagen."}
         return {"ok": True}
-
-    def elegir_logo(self) -> dict:
-        return self._elegir_imagen("logo")
 
     def elegir_imagen_vb(self) -> dict:
         return self._elegir_imagen("imagen_vb")
@@ -1020,6 +994,7 @@ class Api:
         caja y la página del campo. De la caja solo se usa la posición (x, y):
         el tamaño del sello es fijo por tipo y se ignoran «ancho» y «alto». El
         motivo debe ser uno de la lista del tipo; si no, se usa el predeterminado.
+        El logo de «Firma» es siempre el inicial (`preparar_logo`).
         """
         tipo = opciones.get("tipo") or leer_config()["tipo"]
         return OpcionesFirma(
@@ -1030,7 +1005,7 @@ class Api:
             texto_sello=opciones.get("texto_sello") or None,
             motivo=motivo_permitido(tipo, opciones.get("motivo")),
             lugar=(opciones.get("lugar") or "").strip() or None,
-            logo=ruta_imagen_guardada("logo") if tipo == "firma" else None,
+            logo=preparar_logo() if tipo == "firma" else None,
             imagen_vb=ruta_imagen_guardada("imagen_vb") if tipo == "visto_bueno" else None,
         )
 

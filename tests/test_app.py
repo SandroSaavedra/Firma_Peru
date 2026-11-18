@@ -3,6 +3,8 @@ Prueba de humo de la API que usa la interfaz (`app.Api`), sin abrir ventana
 ni tocar el DNIe: la llave se simula y la firma CNG también.
 """
 import base64
+import io
+import json
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,6 @@ import app
 
 # Valores de app.py antes de que el fixture `appdata` (conftest) los reemplace en cada prueba.
 LOGO_INICIAL_ORIGINAL = app.LOGO_INICIAL
-LOGO_INICIAL_ANTERIOR_ORIGINAL = getattr(app, "LOGO_INICIAL_ANTERIOR", None)
 
 
 @pytest.fixture
@@ -304,50 +305,158 @@ def test_config_predeterminada(api):
     }
 
 
-def test_logo_y_tipo_persisten_en_appdata(api, appdata, tmp_path):
-    original = _imagen(tmp_path / "mi logo.jpg", "JPEG")
-    api._asignar_ventana(VentanaFalsa([str(original)]))
-
-    r = api.elegir_logo()
-    assert r["ok"], r
-    assert r["logo"]["datos"].startswith("data:image/png;base64,")
-    copia = appdata / "FirmadorDNIe" / "logo.png"
-    assert copia.is_file()
-    original.unlink()  # mover o borrar el original no afecta a la copia
-    assert api.guardar_tipo("visto_bueno")["ok"]
-
-    otra = app.Api()  # simula reiniciar la aplicación
-    c = otra.obtener_config()
-    assert c["tipo"] == "visto_bueno"
-    assert c["logo"] is not None and c["logo"]["datos"].startswith("data:image/png;base64,")
+AZUL = (30, 60, 200)  # logo inicial (el que acompaña al programa)
+VERDE = (10, 150, 10)  # logo elegido con «Cambiar logo…» en versiones anteriores
 
 
-def test_el_logo_se_puede_cambiar_pero_no_quitar():
-    assert not hasattr(app.Api, "quitar_logo")
-    assert hasattr(app.Api, "elegir_logo") and hasattr(app.Api, "quitar_imagen_vb")
+@pytest.fixture
+def logo_inicial(tmp_path, monkeypatch):
+    """Logo inicial junto al programa (azul, más grande que LADO_MAXIMO_LOGO)."""
+    carpeta = tmp_path / "src"
+    carpeta.mkdir(exist_ok=True)
+    ruta = _imagen(carpeta / "Emblema peruano con firma digital.png", "PNG", (1000, 1000), AZUL)
+    monkeypatch.setattr(app, "LOGO_INICIAL", ruta)
+    return ruta
 
 
-def test_logo_grande_se_reduce(api, appdata, tmp_path):
+def _logo_propio_de_version_anterior():
+    """Configuración que dejaba «Cambiar logo…» (opción que ya no existe): logo.png verde."""
+    carpeta = app.carpeta_config()
+    carpeta.mkdir(parents=True, exist_ok=True)
+    _imagen(carpeta / "logo.png", "PNG", (437, 259), VERDE)
+    datos = {"tipo": "firma", "logo": "logo.png", "logo_inicial_aplicado": True}
+    (carpeta / "config.json").write_text(json.dumps(datos), encoding="utf-8")
+
+
+def _logo_quitado_en_version_anterior():
+    """Configuración que dejaba «Quitar logo» (opción que ya no existe)."""
+    carpeta = app.carpeta_config()
+    carpeta.mkdir(parents=True, exist_ok=True)
+    (carpeta / "logo.png").unlink(missing_ok=True)
+    datos = {"tipo": "firma", "logo": None, "logo_inicial_aplicado": True}
+    (carpeta / "config.json").write_text(json.dumps(datos), encoding="utf-8")
+
+
+def _vista_previa(imagen: dict):
+    """(tamaño, color de la esquina) de una imagen enviada a la interfaz como data URL."""
     from PIL import Image
 
-    api._asignar_ventana(VentanaFalsa([str(_imagen(tmp_path / "grande.png", "PNG", (4000, 1000)))]))
-    assert api.elegir_logo()["ok"]
-    with Image.open(appdata / "FirmadorDNIe" / "logo.png") as copia:
-        assert max(copia.size) <= app.LADO_MAXIMO_LOGO
+    datos = base64.b64decode(imagen["datos"].split(",", 1)[1])
+    with Image.open(io.BytesIO(datos)) as vista:
+        return vista.size, vista.convert("RGB").getpixel((0, 0))
 
 
-def test_logo_que_no_es_imagen_se_rechaza(api, appdata, tmp_path):
+def _espiar_logo(monkeypatch) -> list:
+    """
+    Registra, en cada llamada a `firmar_pdf`, (tamaño, color de la esquina) del
+    logo que recibe, o None si firma sin logo.
+    """
+    from PIL import Image
+
+    vistos = []
+    firmar_pdf = app.firmar_pdf
+
+    def _firmar_pdf(*args, **kwargs):
+        opciones = args[4] if len(args) > 4 else kwargs["opciones"]
+        if opciones.logo:
+            with Image.open(opciones.logo) as logo:
+                vistos.append((logo.size, logo.convert("RGB").getpixel((0, 0))))
+        else:
+            vistos.append(None)
+        return firmar_pdf(*args, **kwargs)
+
+    monkeypatch.setattr(app, "firmar_pdf", _firmar_pdf)
+    return vistos
+
+
+def _tiene_imagen(ruta, indice=2) -> bool:
+    """True si la apariencia del sello de la página `indice` incluye una imagen."""
+    with open(ruta, "rb") as f:
+        reader = PdfFileReader(f, strict=False)
+        pagina = reader.find_page_for_modification(indice)[0].get_object()
+        anot = next(a.get_object() for a in pagina["/Annots"])
+        recursos = anot["/AP"]["/N"].get_object()["/Resources"]
+        return any(x.get_object().get("/Subtype") == "/Image" for x in recursos.get("/XObject", {}).values())
+
+
+def test_el_logo_no_se_puede_cambiar_ni_quitar():
+    assert not hasattr(app.Api, "elegir_logo") and not hasattr(app.Api, "quitar_logo")
+    # La imagen de visto bueno sí se elige y se quita.
+    assert hasattr(app.Api, "elegir_imagen_vb") and hasattr(app.Api, "quitar_imagen_vb")
+
+
+def test_tipo_persiste_y_el_logo_es_el_inicial(api, appdata, logo_inicial):
+    assert api.guardar_tipo("visto_bueno")["ok"]
+    c = app.Api().obtener_config()  # simula reiniciar la aplicación
+    assert c["tipo"] == "visto_bueno"
+    assert c["logo"]["datos"].startswith("data:image/png;base64,")
+    assert _vista_previa(c["logo"])[1] == AZUL
+
+
+def test_config_muestra_el_logo_inicial_reducido(api, logo_inicial):
+    original = logo_inicial.read_bytes()
+    tamano, color = _vista_previa(api.obtener_config()["logo"])
+    assert color == AZUL and max(tamano) <= app.LADO_MAXIMO_LOGO
+    assert logo_inicial.read_bytes() == original  # el archivo junto al programa no se toca
+
+
+def test_logo_elegido_en_version_anterior_se_ignora(api, pdf_multipagina, logo_inicial, monkeypatch):
+    _logo_propio_de_version_anterior()
+    assert _vista_previa(app.Api().obtener_config()["logo"])[1] == AZUL
+
+    vistos = _espiar_logo(monkeypatch)
+    api.abrir_ruta(str(pdf_multipagina))
+    r = api.firmar({"paginas": "ultima", "tipo": "firma"})
+    assert r["ok"], r
+    assert [color for _, color in vistos] == [AZUL]
+
+
+def test_logo_quitado_en_version_anterior_vuelve_a_ser_el_inicial(api, pdf_multipagina, logo_inicial, monkeypatch):
+    _logo_quitado_en_version_anterior()
+    assert _vista_previa(app.Api().obtener_config()["logo"])[1] == AZUL
+
+    vistos = _espiar_logo(monkeypatch)
+    api.abrir_ruta(str(pdf_multipagina))
+    assert api.firmar({"paginas": "ultima", "tipo": "firma"})["ok"]
+    assert [color for _, color in vistos] == [AZUL]
+
+
+def test_logo_inicial_grande_se_reduce_al_firmar(api, pdf_multipagina, tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "LOGO_INICIAL", _imagen(tmp_path / "grande.png", "PNG", (4000, 1000), AZUL))
+    vistos = _espiar_logo(monkeypatch)
+    api.abrir_ruta(str(pdf_multipagina))
+    assert api.firmar({"paginas": "ultima", "tipo": "firma"})["ok"]
+    (tamano, color), = vistos
+    assert color == AZUL and max(tamano) <= app.LADO_MAXIMO_LOGO
+
+
+def test_sin_logo_inicial_se_firma_sin_logo_aunque_haya_uno_guardado(api, pdf_multipagina, tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(app, "LOGO_INICIAL", tmp_path / "no-existe.png")
+    _logo_propio_de_version_anterior()
+    assert api.obtener_config()["logo"] is None
+
+    vistos = _espiar_logo(monkeypatch)
+    api.abrir_ruta(str(pdf_multipagina))
+    with caplog.at_level("WARNING", logger="firmador"):
+        r = api.firmar({"paginas": "ultima", "tipo": "firma"})
+    assert r["ok"], r
+    assert vistos == [None]
+    assert not _tiene_imagen(r["salida"])
+    assert "logo" in caplog.text
+
+
+def test_logo_inicial_que_no_es_imagen_se_firma_sin_logo(api, pdf_multipagina, tmp_path, monkeypatch, caplog):
     falso = tmp_path / "falso.png"
     falso.write_text("no soy una imagen")
-    api._asignar_ventana(VentanaFalsa([str(falso)]))
-    r = api.elegir_logo()
-    assert r["ok"] is False and "imagen" in r["mensaje"]
-    assert not (appdata / "FirmadorDNIe" / "logo.png").exists()
+    monkeypatch.setattr(app, "LOGO_INICIAL", falso)
+    assert api.obtener_config()["logo"] is None
 
-
-def test_elegir_logo_cancelado(api):
-    api._asignar_ventana(VentanaFalsa(None))
-    assert api.elegir_logo() == {"ok": False, "cancelado": True}
+    api.abrir_ruta(str(pdf_multipagina))
+    with caplog.at_level("WARNING", logger="firmador"):
+        r = api.firmar({"paginas": "ultima", "tipo": "firma"})
+    assert r["ok"], r
+    assert not _tiene_imagen(r["salida"])
+    assert "logo" in caplog.text
 
 
 def test_tipo_invalido_y_config_danada(api, appdata):
@@ -359,40 +468,6 @@ def test_tipo_invalido_y_config_danada(api, appdata):
     assert c["ok"] and c["tipo"] == "firma" and c["logo"] is None
 
 
-def test_logo_inicial_se_copia_una_sola_vez(api, appdata, tmp_path, monkeypatch):
-    inicial = _imagen(tmp_path / "logo_institucion.png", "PNG", (437, 259))
-    original = inicial.read_bytes()
-    monkeypatch.setattr(app, "LOGO_INICIAL", inicial)
-
-    c = api.obtener_config()
-    assert c["logo"] is not None
-    assert (appdata / "FirmadorDNIe" / "logo.png").is_file()
-    assert inicial.read_bytes() == original  # el archivo del usuario no se toca
-
-    # Un logo elegido después no se reemplaza por el inicial al reiniciar.
-    api._asignar_ventana(VentanaFalsa([str(_imagen(tmp_path / "otro.png", "PNG", color=(10, 150, 10)))]))
-    assert api.elegir_logo()["ok"]
-    guardado = (appdata / "FirmadorDNIe" / "logo.png").read_bytes()
-    assert app.Api().obtener_config()["logo"] is not None
-    assert (appdata / "FirmadorDNIe" / "logo.png").read_bytes() == guardado
-
-
-def _logo_quitado_en_version_anterior():
-    """Configuración que dejaba «Quitar logo» (opción que ya no existe)."""
-    (app.carpeta_config() / "logo.png").unlink(missing_ok=True)
-    app.guardar_config({**app.leer_config(), "logo": None, "logo_inicial_aplicado": True})
-
-
-def test_logo_quitado_antes_se_restaura_al_iniciar(api, appdata, tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "LOGO_INICIAL", _imagen(tmp_path / "inicial.png", "PNG", (437, 259)))
-    assert api.obtener_config()["logo"] is not None
-    _logo_quitado_en_version_anterior()
-
-    assert app.Api().obtener_config()["logo"] is not None
-    assert (appdata / "FirmadorDNIe" / "logo.png").is_file()
-    assert app.leer_config()["logo"] == "logo.png"
-
-
 def test_sin_logo_inicial_no_hay_logo(api, tmp_path, monkeypatch):
     monkeypatch.setattr(app, "LOGO_INICIAL", tmp_path / "no-existe.png")
     assert api.obtener_config()["logo"] is None
@@ -401,107 +476,12 @@ def test_sin_logo_inicial_no_hay_logo(api, tmp_path, monkeypatch):
 def test_logo_inicial_se_busca_junto_al_ejecutable(monkeypatch, tmp_path):
     monkeypatch.setattr(app.sys, "frozen", True, raising=False)
     monkeypatch.setattr(app.sys, "executable", str(tmp_path / "FirmadorDNIe.exe"))
-    monkeypatch.setattr(app, "LOGO_INICIAL", app.Path("src") / "firma_digital_vivienda.png")
-    assert app.ruta_logo_inicial() == tmp_path.resolve() / "src" / "firma_digital_vivienda.png"
+    monkeypatch.setattr(app, "LOGO_INICIAL", LOGO_INICIAL_ORIGINAL)
+    assert app.ruta_logo_inicial() == tmp_path.resolve() / "src" / "Emblema peruano con firma digital.png"
 
 
 def test_logo_inicial_predeterminado_es_el_emblema_peruano():
     assert LOGO_INICIAL_ORIGINAL == Path("src") / "Emblema peruano con firma digital.png"
-    assert LOGO_INICIAL_ANTERIOR_ORIGINAL == Path("src") / "firma_digital_vivienda.png"
-
-
-@pytest.fixture
-def logos_iniciales(tmp_path):
-    """Logo inicial anterior (rojo) y actual (azul), con tamaños distintos."""
-    carpeta = tmp_path / "src"
-    carpeta.mkdir()
-    anterior = _imagen(carpeta / "anterior.png", "PNG", (437, 259), (200, 40, 40))
-    nuevo = _imagen(carpeta / "nuevo.png", "PNG", (1000, 1000), (30, 60, 200))
-    return anterior, nuevo
-
-
-def _instalacion_anterior(api, monkeypatch, anterior, nuevo):
-    """Simula una instalación previa (que copió el logo anterior) y actualiza el programa."""
-    monkeypatch.setattr(app, "LOGO_INICIAL", anterior)
-    assert api.obtener_config()["logo"] is not None
-    monkeypatch.setattr(app, "LOGO_INICIAL", nuevo)
-    monkeypatch.setattr(app, "LOGO_INICIAL_ANTERIOR", anterior, raising=False)
-
-
-def test_configuracion_nueva_copia_el_logo_inicial_actual(api, appdata, logos_iniciales, monkeypatch):
-    anterior, nuevo = logos_iniciales
-    monkeypatch.setattr(app, "LOGO_INICIAL", nuevo)
-    monkeypatch.setattr(app, "LOGO_INICIAL_ANTERIOR", anterior, raising=False)
-
-    assert api.obtener_config()["logo"] is not None
-    _, tamano, _ = _pixeles(appdata / "FirmadorDNIe" / "logo.png")
-    assert tamano == (app.LADO_MAXIMO_LOGO, app.LADO_MAXIMO_LOGO)
-    assert _color_de_esquina(appdata / "FirmadorDNIe" / "logo.png") == (30, 60, 200)  # el emblema nuevo
-    assert app.leer_config()["logo_inicial_aplicado"] is True
-
-
-def test_logo_inicial_anterior_sin_cambios_se_reemplaza(api, appdata, logos_iniciales, monkeypatch):
-    anterior, nuevo = logos_iniciales
-    _instalacion_anterior(api, monkeypatch, anterior, nuevo)
-    guardado = appdata / "FirmadorDNIe" / "logo.png"
-    copia_anterior = _pixeles(guardado)
-
-    assert api.obtener_config()["logo"] is not None
-    assert _pixeles(guardado) != copia_anterior
-    assert _color_de_esquina(guardado) == (30, 60, 200)  # el emblema nuevo
-    config = app.leer_config()
-    assert config["logo"] == "logo.png" and config["logo_inicial_aplicado"] is True
-    assert anterior.is_file() and nuevo.is_file()  # los originales no se tocan
-
-
-def test_logo_elegido_por_el_usuario_no_se_reemplaza(api, appdata, logos_iniciales, monkeypatch, tmp_path):
-    anterior, nuevo = logos_iniciales
-    monkeypatch.setattr(app, "LOGO_INICIAL", anterior)
-    assert api.obtener_config()["logo"] is not None
-    api._asignar_ventana(VentanaFalsa([str(_imagen(tmp_path / "propio.png", "PNG", (437, 259), (10, 150, 10)))]))
-    assert api.elegir_logo()["ok"]
-    guardado = appdata / "FirmadorDNIe" / "logo.png"
-    propio = guardado.read_bytes()
-
-    monkeypatch.setattr(app, "LOGO_INICIAL", nuevo)
-    monkeypatch.setattr(app, "LOGO_INICIAL_ANTERIOR", anterior, raising=False)
-    assert api.obtener_config()["logo"] is not None
-    assert guardado.read_bytes() == propio
-
-
-def test_logo_quitado_vuelve_con_el_logo_inicial_actual(api, appdata, logos_iniciales, monkeypatch):
-    anterior, nuevo = logos_iniciales
-    _instalacion_anterior(api, monkeypatch, anterior, nuevo)
-    _logo_quitado_en_version_anterior()
-
-    assert api.obtener_config()["logo"] is not None
-    assert _color_de_esquina(appdata / "FirmadorDNIe" / "logo.png") == (30, 60, 200)  # el emblema nuevo
-    config = app.leer_config()
-    assert config["logo"] == "logo.png" and config["logo_inicial_aplicado"] is True
-
-
-def test_sin_logo_anterior_junto_al_programa_no_se_toca(api, appdata, logos_iniciales, monkeypatch):
-    anterior, nuevo = logos_iniciales
-    _instalacion_anterior(api, monkeypatch, anterior, nuevo)
-    guardado = appdata / "FirmadorDNIe" / "logo.png"
-    copia_anterior = guardado.read_bytes()
-    anterior.unlink()  # no hay con qué comparar: no se puede saber si es la copia de fábrica
-
-    assert api.obtener_config()["logo"] is not None
-    assert guardado.read_bytes() == copia_anterior
-
-
-def test_actualizar_logo_inicial_es_idempotente(api, appdata, logos_iniciales, monkeypatch):
-    anterior, nuevo = logos_iniciales
-    _instalacion_anterior(api, monkeypatch, anterior, nuevo)
-    app.preparar_imagenes_iniciales()
-    guardado = appdata / "FirmadorDNIe" / "logo.png"
-    archivo = appdata / "FirmadorDNIe" / "config.json"
-    tras_la_primera = (guardado.read_bytes(), guardado.stat().st_mtime_ns, archivo.read_bytes())
-
-    app.preparar_imagenes_iniciales()
-    app.preparar_imagenes_iniciales()
-    assert (guardado.read_bytes(), guardado.stat().st_mtime_ns, archivo.read_bytes()) == tras_la_primera
 
 
 def test_imagen_vb_persiste_y_se_quita(api, appdata, tmp_path):
@@ -546,9 +526,7 @@ def test_firmar_visto_bueno_usa_la_imagen_de_la_config(api, pdf_multipagina, tmp
         assert any(x.get_object().get("/Subtype") == "/Image" for x in recursos["/XObject"].values())
 
 
-def test_firmar_usa_tipo_motivo_y_logo_de_la_config(api, pdf_multipagina, tmp_path):
-    api._asignar_ventana(VentanaFalsa([str(_imagen(tmp_path / "logo.png", "PNG"))]))
-    assert api.elegir_logo()["ok"]
+def test_firmar_usa_tipo_motivo_y_logo_inicial(api, pdf_multipagina, logo_inicial, tmp_path):
     api.abrir_ruta(str(pdf_multipagina))
 
     # Motivo vacío: se usa el predeterminado del tipo.

@@ -87,24 +87,20 @@ certificado es de confianza según los certificados raíz de Windows.
 - El motivo se elige de la lista del tipo y también queda registrado en la firma
   digital (campo *Reason*). El lugar, si se indica, solo se registra en la firma.
 - El texto usa Arial incrustada en el PDF; si Arial no está disponible, Helvetica.
-- **Logo**: cámbielo con **Cambiar logo…** (PNG o JPG); no se puede quitar. Se
-  guarda una copia en `%APPDATA%\FirmadorDNIe` (junto con `config.json`, que
-  recuerda el último tipo usado), así que puede mover o borrar el original. Solo
-  si no hay ningún logo (ni el inicial) el texto ocupa todo el sello.
+- **Logo**: siempre es `src\Emblema peruano con firma digital.png`, junto al
+  programa (o junto a `FirmaPeru.exe`); no se puede cambiar ni quitar. El panel
+  lo muestra solo como referencia. Se usa una copia reducida que se guarda en
+  `%APPDATA%\FirmadorDNIe` (junto con `config.json`, que recuerda el último
+  tipo usado). Un logo elegido con versiones anteriores se ignora. Si el
+  archivo falta o no es una imagen, se firma igual, el texto ocupa todo el
+  sello y queda un aviso en el registro.
 - **Imagen de visto bueno**: elíjala con **Elegir imagen…** (solo con
   **Visto bueno**). Se guarda una copia en la misma carpeta; el fondo blanco se
   vuelve transparente. Sin imagen se dibuja una marca de verificación propia.
-- **Imágenes iniciales**: si junto al programa (o junto a `FirmaPeru.exe`)
-  existen `src\Emblema peruano con firma digital.png` (logo) o
-  `src\Icono circular con marca roja.png` (visto bueno), se copian la primera
-  vez. Si quita la imagen de visto bueno con **Quitar imagen**, no se vuelve a
-  copiar. El logo, en cambio, se repone al iniciar si no hay ninguno guardado
-  (por ejemplo, si se quitó con versiones anteriores). Estos archivos son suyos:
-  no se incluyen en el ejecutable; cópielos junto a él si los necesita.
-- **Actualización del logo inicial**: las versiones anteriores usaban
-  `src\firma_digital_vivienda.png`. Si el logo guardado sigue siendo la copia
-  sin cambios de ese archivo (y este sigue junto al programa), al iniciar se
-  reemplaza por el emblema nuevo. Un logo elegido por usted no se toca.
+- **Imagen de visto bueno inicial**: si junto al programa existe
+  `src\Icono circular con marca roja.png`, se copia la primera vez. Si la
+  quita con **Quitar imagen**, no se vuelve a copiar.
+- Las imágenes de `src\` no se incluyen en el ejecutable; cópielas junto a él.
 
 ### PDF que ya tienen firmas
 
@@ -173,7 +169,7 @@ Qué hace el instalador:
 - Instala solo para el usuario actual en `%LOCALAPPDATA%\Programs\Firma Peru`.
   No pide permisos de administrador ni muestra el aviso de Control de cuentas de usuario (UAC).
 - Crea un acceso directo en el menú Inicio y, si lo marca, otro en el escritorio.
-- No toca la configuración ni el logo guardados en `%APPDATA%\FirmadorDNIe`.
+- No toca la configuración ni las imágenes guardadas en `%APPDATA%\FirmadorDNIe`.
 
 Instalación silenciosa (por ejemplo, para distribuirlo con un script):
 

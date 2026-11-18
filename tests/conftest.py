@@ -83,7 +83,6 @@ def appdata(tmp_path, monkeypatch) -> Path:
     import app
 
     monkeypatch.setattr(app, "LOGO_INICIAL", tmp_path / "sin-logo-inicial.png", raising=False)
-    monkeypatch.setattr(app, "LOGO_INICIAL_ANTERIOR", tmp_path / "sin-logo-inicial-anterior.png", raising=False)
     monkeypatch.setattr(app, "IMAGEN_VB_INICIAL", tmp_path / "sin-imagen-vb-inicial.png", raising=False)
     return carpeta
 
