@@ -547,3 +547,23 @@ def test_firmar_usa_tipo_motivo_y_logo_de_la_config(api, pdf_multipagina, tmp_pa
     assert r2["ok"], r2
     with open(r2["salida"], "rb") as f:
         assert PdfFileReader(f, strict=False).embedded_signatures[0].sig_object["/Reason"] == "Doy V° B°"
+
+
+def test_icono_de_la_aplicacion_tiene_los_tamanos_de_windows():
+    from PIL import Image
+
+    assert app.RUTA_ICONO.is_file()
+    with Image.open(app.RUTA_ICONO) as icono:
+        assert icono.format == "ICO"
+        tamanos = icono.info["sizes"]
+    for lado in (16, 32, 48, 256):
+        assert (lado, lado) in tamanos
+
+
+def test_la_ventana_usa_el_icono_de_la_aplicacion(monkeypatch):
+    recibido = {}
+    monkeypatch.setattr(app, "crear_ventana", lambda api: object())
+    monkeypatch.setattr(app.webview, "start", lambda *a, **kw: recibido.update(kw))
+    monkeypatch.setattr(app.sys, "argv", ["app.py"])
+    app.main()
+    assert recibido["icon"] == str(app.RUTA_ICONO)

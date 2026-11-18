@@ -105,6 +105,10 @@ def ruta_recursos() -> Path:
     return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
 
+# Window and executable icon, generated from src/peru.png (see firmador.spec).
+RUTA_ICONO = ruta_recursos() / "assets" / "firma-peru.ico"
+
+
 def codigo_cng(error: Exception) -> int | None:
     """Código de Windows / tarjeta inteligente de un ErrorCNG («... (0x8010006E) ...»)."""
     if not isinstance(error, ErrorCNG):
@@ -1251,7 +1255,13 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     api = Api()
     ventana = crear_ventana(api)
-    webview.start(_al_iniciar, (ventana, api), private_mode=True, debug="--debug" in sys.argv)
+    webview.start(
+        _al_iniciar,
+        (ventana, api),
+        private_mode=True,
+        debug="--debug" in sys.argv,
+        icon=str(RUTA_ICONO),
+    )
 
 
 if __name__ == "__main__":

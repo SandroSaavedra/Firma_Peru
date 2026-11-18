@@ -3,7 +3,9 @@
 # Construir con:  python -m PyInstaller --noconfirm --clean firmador.spec
 from PyInstaller.utils.hooks import collect_submodules
 
-datas = [("ui", "ui")]
+datas = [("ui", "ui"), ("assets", "assets")]
+# Executable, window and installer icon (generated from src/peru.png).
+ICONO = "assets/firma-peru.ico"
 
 # pyHanko y su validador cargan algunos módulos de forma diferida. fontTools
 # importa cada tabla de la fuente por nombre (ttLib.tables.*) y uharfbuzz es
@@ -42,6 +44,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    icon=ICONO,
 )
 
 coll = COLLECT(

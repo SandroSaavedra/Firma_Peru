@@ -29,6 +29,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 CloseApplications=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile=..\assets\firma-peru.ico
 UninstallDisplayName={#MyAppName}
 OutputDir=..\dist\installer
 OutputBaseFilename=FirmaPeru-Setup-{#MyAppVersion}
