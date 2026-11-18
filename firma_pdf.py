@@ -64,7 +64,7 @@ TipoSello = Literal["firma", "visto_bueno"]
 TIPOS_SELLO: tuple[str, ...] = ("firma", "visto_bueno")
 MOTIVOS_PREDETERMINADOS = {"firma": "Soy el autor del documento", "visto_bueno": "Doy V° B°"}
 PLANTILLAS_SELLO = {
-    "firma": "Firmado digitalmente por: %(firmante)s\nMotivo: %(motivo)s\nFecha: %(ts)s",
+    "firma": "Firmado digitalmente por:\n%(firmante)s\nMotivo: %(motivo)s\nFecha: %(ts)s",
     "visto_bueno": "Firmado digitalmente por\n%(firmante)s\nMotivo: %(motivo)s\nFecha: %(ts)s",
 }
 FORMATOS_FECHA = {"firma": "%Y/%m/%d %H:%M:%S%z", "visto_bueno": "%d.%m.%Y %H:%M:%S %:z"}

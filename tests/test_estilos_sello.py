@@ -236,3 +236,8 @@ def test_texto_largo_se_reparte_en_varias_lineas():
     assert " ".join(lineas) == "Firmado digitalmente por: NOMBRE MUY LARGO DEL TITULAR"
     # una palabra más ancha que la caja se corta por caracteres
     assert firma_pdf._ajustar_lineas("ABCDEFGHIJ", 4, len) == ["ABCD", "EFGH", "IJ"]
+
+
+def test_firma_template_puts_signer_on_its_own_line():
+    # Matches ReFirma: "Firmado digitalmente por:" then the signer on the next line.
+    assert firma_pdf.PLANTILLAS_SELLO["firma"].startswith("Firmado digitalmente por:\n%(firmante)s\n")

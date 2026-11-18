@@ -13,7 +13,7 @@ const RUTA_PDFJS = new URL("./vendor/pdfjs/", import.meta.url).href;
 // A4 que firma_pdf.py (PLANTILLAS_SELLO, _TAM_MAXIMO, CAJAS_POR_TIPO).
 const TIPOS = {
   firma: {
-    plantilla: "Firmado digitalmente por: {firmante}\nMotivo: {motivo}\nFecha: {fecha}",
+    plantilla: "Firmado digitalmente por:\n{firmante}\nMotivo: {motivo}\nFecha: {fecha}",
     tamMaximo: 9,
     caja: { x: 300 / 595, y: 30 / 842, ancho: 260 / 595, alto: 75 / 842 },
     ayuda: "Su logo a la izquierda y los datos de la firma a la derecha.",
