@@ -46,13 +46,40 @@ def test_ya_no_existe_el_interruptor_de_posicion_propia():
     assert "chkPosicionPropia" not in js and "campoPosicionPropia" not in js
 
 
-def test_boton_aplicar_posicion_a_todos_existe_y_esta_conectado():
+def _boton(html: str, id_: str) -> str:
+    boton = re.search(rf'<button[^>]*\bid="{id_}"[^>]*>(.*?)</button>', html, re.S)
+    assert boton, f"falta el botón {id_}"
+    return boton.group(1).strip()
+
+
+def test_boton_aplicar_a_todos_los_documentos_existe_y_esta_conectado():
     html, js = _html(), _js()
-    boton = re.search(r'<button[^>]*\bid="btn-posicion-todos"[^>]*>(.*?)</button>', html, re.S)
-    assert boton, "falta el botón btn-posicion-todos"
-    assert "Aplicar esta posición a todos" in boton.group(1)
+    assert _boton(html, "btn-posicion-todos") == "Aplicar a todos los documentos"
     assert '$("btn-posicion-todos")' in js
     assert re.search(r"el\.btnPosicionTodos\.addEventListener\(\s*\"click\"", js)
+
+
+def test_boton_aplicar_a_todas_las_paginas_existe_y_esta_conectado():
+    html, js = _html(), _js()
+    assert _boton(html, "btn-posicion-paginas") == "Aplicar a todas las páginas"
+    assert '$("btn-posicion-paginas")' in js
+    assert re.search(r"el\.btnPosicionPaginas\.addEventListener\(\s*\"click\"", js)
+    # Ambos botones se desactivan mientras se firma o sin documento abierto.
+    cuerpo = re.search(r"function actualizarBotonFirmar\(\) \{(.*?)\n\}", js, re.S).group(1)
+    assert "el.btnPosicionPaginas.disabled" in cuerpo and "el.btnPosicionTodos.disabled" in cuerpo
+
+
+def test_ya_no_existe_el_texto_aplicar_esta_posicion_a_todos():
+    html, js = _html(), _js()
+    assert "Aplicar esta posición a todos" not in html and "Aplicar esta posición a todos" not in js
+
+
+def test_posiciones_por_pagina_se_envian_a_python_en_ambas_firmas():
+    js = _js()
+    lote = re.search(r"function ajustesParaPython\(\) \{(.*?)\n\}", js, re.S).group(1)
+    assert "posiciones_paginas" in lote
+    uno = re.search(r"async function firmar\(\) \{(.*?)\n\}", js, re.S).group(1)
+    assert "posiciones_paginas" in uno
 
 
 def test_mover_el_sello_solo_cambia_la_posicion_del_documento_abierto():
@@ -62,3 +89,10 @@ def test_mover_el_sello_solo_cambia_la_posicion_del_documento_abierto():
     assert "estado.caja" not in cuerpo.group(1)
     assert "guardarPreferencia" not in cuerpo.group(1)
     assert "ajusteEditable()" in cuerpo.group(1)
+
+
+def test_mover_el_sello_solo_cambia_la_posicion_de_la_pagina_a_la_vista():
+    js = _js()
+    cuerpo = re.search(r"function confirmarCaja\(\) \{(.*?)\n\}", js, re.S).group(1)
+    assert "cajasPaginas" in cuerpo and "estado.pagina" in cuerpo
+    assert ".caja =" not in cuerpo  # la posición del documento no cambia

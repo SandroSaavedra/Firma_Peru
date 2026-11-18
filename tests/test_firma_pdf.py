@@ -274,3 +274,92 @@ def test_sello_tiene_tamano_fijo_en_paginas_de_distinto_tamano(tmp_path, firmant
     for indice in range(3):
         (widget, _), = _widgets_de_firma(reader, indice)
         assert _tamano(tuple(float(v) for v in widget["/Rect"])) == firma_pdf.TAMANOS_SELLO[tipo]
+
+
+# --- Posición propia por página -----------------------------------------------
+
+
+def test_posicion_propia_de_una_pagina_solo_cambia_esa_pagina(tmp_path, pdf_multipagina, firmante, material_prueba):
+    salida = tmp_path / "salida.pdf"
+    documento = _posicion(0.1, 0.1)
+    propia = _posicion(0.6, 0.7)
+    opciones = OpcionesFirma(posicion=documento, paginas="todas", posiciones_paginas={1: propia})
+    resultado = firmar_pdf(pdf_multipagina, salida, firmante, "PRUEBA", opciones)
+
+    assert resultado.paginas_selladas == [0, 1, 2]
+    reader = _leer(salida)
+    firmas = reader.embedded_signatures
+    assert len(firmas) == 1  # una sola firma: los sellos siguen siendo widgets del mismo campo
+    estado = validate_pdf_signature(firmas[0], ValidationContext(trust_roots=[material_prueba[1]]))
+    assert estado.intact and estado.valid
+    assert estado.modification_level in (None, ModificationLevel.NONE)
+
+    esperados = [
+        firma_pdf.rect_sello(documento, A4, "firma"),
+        firma_pdf.rect_sello(propia, CARTA_HORIZONTAL, "firma"),
+        firma_pdf.rect_sello(documento, A4, "firma"),
+    ]
+    apariencias = []
+    for indice, esperado in enumerate(esperados):
+        (widget, _), = _widgets_de_firma(reader, indice)
+        rect = tuple(float(v) for v in widget["/Rect"])
+        assert rect == pytest.approx(esperado, abs=0.01)
+        assert _tamano(rect) == (160, 40)
+        apariencias.append(_ap_normal(widget).reference)
+    # El sello mide lo mismo en cada página: la apariencia se sigue compartiendo.
+    assert len(set(apariencias)) == 1
+
+
+@pytest.mark.parametrize("paginas", ["todas", "ultima"])
+def test_pagina_del_campo_usa_su_posicion_propia(tmp_path, pdf_multipagina, firmante, paginas):
+    salida = tmp_path / "salida.pdf"
+    documento = _posicion(0.1, 0.1)
+    propia = _posicion(0.3, 0.8)
+    opciones = OpcionesFirma(posicion=documento, paginas=paginas, posiciones_paginas={2: propia})
+    resultado = firmar_pdf(pdf_multipagina, salida, firmante, "PRUEBA", opciones)
+
+    assert resultado.pagina_firma == 2
+    reader = _leer(salida)
+    rect = firma_pdf.rect_sello
+    assert _rect_del_campo(reader, 2) == pytest.approx(rect(propia, A4, "firma"), abs=0.01)
+    if paginas == "todas":
+        assert _rect_del_campo(reader, 0) == pytest.approx(rect(documento, A4, "firma"), abs=0.01)
+
+
+def test_posicion_propia_en_pdf_ya_firmado_mueve_solo_el_campo(tmp_path, pdf_multipagina, firmante, material_prueba):
+    primera = tmp_path / "primera.pdf"
+    segunda = tmp_path / "segunda.pdf"
+    firmar_pdf(pdf_multipagina, primera, firmante, "PRUEBA", OpcionesFirma(paginas="todas"))
+    propia = _posicion(0.2, 0.5)
+    opciones = OpcionesFirma(paginas="todas", pagina_firma=0, posiciones_paginas={0: propia})
+    resultado = firmar_pdf(primera, segunda, firmante, "PRUEBA", opciones)
+
+    assert resultado.modo == "solo_campo"
+    reader = _leer(segunda)
+    nuevos = [w for w, c in _widgets_de_firma(reader, 0) if c["/T"] == resultado.campo]
+    assert len(nuevos) == 1
+    rect = tuple(float(v) for v in nuevos[0]["/Rect"])
+    assert rect == pytest.approx(firma_pdf.rect_sello(propia, A4, "firma"), abs=0.01)
+    contexto = ValidationContext(trust_roots=[material_prueba[1]])
+    for firma in reader.embedded_signatures:
+        estado = validate_pdf_signature(firma, contexto)
+        assert estado.intact and estado.valid
+        assert estado.modification_level <= ModificationLevel.FORM_FILLING
+
+
+@pytest.mark.parametrize(
+    "posiciones",
+    [
+        {3: firma_pdf.PosicionRelativa(0.1, 0.1)},  # página inexistente (el PDF tiene 3)
+        {-1: firma_pdf.PosicionRelativa(0.1, 0.1)},
+        {"0": firma_pdf.PosicionRelativa(0.1, 0.1)},
+        {0: firma_pdf.PosicionRelativa(float("nan"), 0.1)},
+        {0: firma_pdf.PosicionRelativa(0.1, 1.5)},
+        {0: (0.1, 0.1)},
+    ],
+)
+def test_posiciones_por_pagina_invalidas_se_rechazan(tmp_path, pdf_multipagina, firmante, posiciones):
+    salida = tmp_path / "s.pdf"
+    with pytest.raises(ErrorFirma):
+        firmar_pdf(pdf_multipagina, salida, firmante, "PRUEBA", OpcionesFirma(posiciones_paginas=posiciones))
+    assert not salida.exists()

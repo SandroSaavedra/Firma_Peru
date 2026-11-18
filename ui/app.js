@@ -51,7 +51,7 @@ const el = {
   btnCerrarDoc: $("btn-cerrar-doc"),
   cola: $("cola"), colaTotal: $("cola-total"), listaCola: $("lista-cola"), btnAgregar: $("btn-agregar"), btnVaciar: $("btn-vaciar"),
   vacioTitulo: $("vacio-titulo"),
-  txtCampoAyuda: $("txt-campo-ayuda"), btnPosicionTodos: $("btn-posicion-todos"),
+  txtCampoAyuda: $("txt-campo-ayuda"), btnPosicionPaginas: $("btn-posicion-paginas"), btnPosicionTodos: $("btn-posicion-todos"),
   lblGuardarComo: $("lbl-guardar-como"), btnFirmarTexto: $("btn-firmar-texto"),
   dialogoProgreso: $("dialogo-progreso"), dialogoProgresoValor: $("dialogo-progreso-valor"),
   dialogoNota: $("dialogo-nota"), dialogoLista: $("dialogo-lista"),
@@ -104,7 +104,9 @@ const estado = {
   // a la vista tiene sus bytes en JS (se cargan al elegirlo).
   cola: [],            // [{ id, nombre, ruta, paginas, firmas, docmdp, valido, estado, mensaje, salida }]
   actualId: null,      // id del documento a la vista
-  ajustes: {},         // id -> { caja?: posición propia { x, y }, pagina?: índice 0.. del campo («Página actual») }
+  // id -> { caja?: posición propia del documento { x, y }, pagina?: índice 0.. del campo («Página actual»),
+  //        cajasPaginas?: { índice 0..: { x, y } } posición propia de algunas páginas }
+  ajustes: {},
   lote: null,          // avance de la firma por lotes { total, indice, hechos, nombre, cancelando }
   carga: 0,            // descarta cargas de documentos que quedaron viejas
   sinArrastrar: false,
@@ -418,7 +420,7 @@ function filaCola(item) {
   const meta = [];
   if (item.valido) meta.push(plural(item.paginas, "pág.", "págs."));
   if (item.firmas > 0) meta.push("ya firmado");
-  if (ajuste && ajuste.caja) meta.push("posición propia");
+  if (ajuste && (ajuste.caja || tieneCajasPaginas(ajuste))) meta.push("posición propia");
   if (ajuste && ajuste.pagina != null) meta.push(`campo en pág. ${ajuste.pagina + 1}`);
   const etiqueta = ESTADOS_COLA[item.estado] || item.estado;
   const mostrarMensaje = item.mensaje && item.estado !== "firmado";
@@ -661,15 +663,31 @@ function ajusteEditable() {
   return estado.ajustes[estado.actualId];
 }
 
-function limpiarAjuste() {
-  const a = ajusteActual();
-  if (a && a.caja == null && a.pagina == null) delete estado.ajustes[estado.actualId];
+function tieneCajasPaginas(a) {
+  return Boolean(a && a.cajasPaginas && Object.keys(a.cajasPaginas).length);
 }
 
-// La posición que se ve y se firma: la propia del documento o la común a todos.
-function cajaVisible() {
+function limpiarAjuste() {
+  const a = ajusteActual();
+  if (a && a.caja == null && a.pagina == null && !tieneCajasPaginas(a)) delete estado.ajustes[estado.actualId];
+}
+
+// Posición del documento a la vista: la propia del documento o la común a todos.
+function cajaDocumento() {
   const a = ajusteActual();
   return (a && a.caja) || estado.caja;
+}
+
+// Posición del sello en la página n (desde 1): la propia de esa página, si el
+// sello se movió en ella, o la del documento.
+function cajaDePagina(n) {
+  const a = ajusteActual();
+  return (a && a.cajasPaginas && a.cajasPaginas[n - 1]) || cajaDocumento();
+}
+
+// La posición que se ve y se firma en la página a la vista.
+function cajaVisible() {
+  return cajaDePagina(estado.pagina);
 }
 
 // Al abrir un documento se refleja su «Página actual» (y se va a esa página);
@@ -688,27 +706,50 @@ function aplicarAjustesDelDocumento() {
 function actualizarAjustesVisibles() {
   const varios = estado.cola.length >= 2 && Boolean(estado.info);
   el.txtCampoAyuda.textContent = varios
-    ? "Arrastre el sello para ubicarlo; su tamaño es fijo. Lo que mueva se aplica solo a este documento; " +
-      "«Aplicar esta posición a todos» la copia a los demás. El campo de firma va en la última página de cada documento; «Página actual» solo se aplica a este."
-    : "Arrastre el sello sobre la página para ubicarlo; su tamaño es fijo. La posición se aplica igual en todas las páginas. " +
-      "«Aplicar esta posición a todos» la deja como predeterminada.";
+    ? "Arrastre el sello para ubicarlo; su tamaño es fijo. Lo que mueva se aplica solo a esta página de este documento; " +
+      "«Aplicar a todas las páginas» la usa en todo el documento y «Aplicar a todos los documentos», en todos los de la lista. " +
+      "El campo de firma va en la última página de cada documento; «Página actual» solo se aplica a este."
+    : "Arrastre el sello sobre la página para ubicarlo; su tamaño es fijo. Lo que mueva se aplica solo a esta página; " +
+      "«Aplicar a todas las páginas» la usa en todo el documento y «Aplicar a todos los documentos» además la deja como predeterminada.";
 }
 
-// La posición del documento a la vista pasa a ser la común (y la preferencia
-// guardada) y los demás documentos dejan su posición propia; «Página actual»
-// de cada uno se mantiene.
+// La posición de la página a la vista pasa a ser la del documento y las demás
+// páginas dejan su posición propia. Los otros documentos no cambian.
+function aplicarATodasLasPaginas() {
+  if (estado.firmando || !estado.info || !estado.actualId) return;
+  const caja = { ...cajaVisible() };
+  const a = ajusteEditable();
+  a.caja = caja;
+  delete a.cajasPaginas;
+  posicionarSello();
+  actualizarMarcas();
+  actualizarMarcasPropias();
+  renderizarCola();
+  aviso("La posición del sello se aplicó a todas las páginas de este documento.");
+}
+
+// La posición de la página a la vista pasa a ser la común (y la preferencia
+// guardada) y todos los documentos dejan sus posiciones propias (del documento
+// y de cada página); «Página actual» de cada uno se mantiene.
 function aplicarPosicionATodos() {
   if (estado.firmando || !estado.info || !estado.actualId) return;
   estado.caja = { ...cajaVisible() };
   guardarPreferencia("caja", estado.caja);
   for (const [id, a] of Object.entries(estado.ajustes)) {
     delete a.caja;
+    delete a.cajasPaginas;
     if (a.pagina == null) delete estado.ajustes[id];
   }
   posicionarSello();
   actualizarMarcas();
+  actualizarMarcasPropias();
   renderizarCola();
   aviso("La posición del sello se aplicó a todos los documentos.");
+}
+
+// Posiciones propias por página para Python: { "índice": { x, y } }, índice desde 0.
+function posicionesPaginasParaPython(a) {
+  return tieneCajasPaginas(a) ? { ...a.cajasPaginas } : {};
 }
 
 function ajustesParaPython() {
@@ -717,6 +758,7 @@ function ajustesParaPython() {
     const ajuste = {};
     if (a.caja) ajuste.caja = a.caja;
     if (a.pagina != null) ajuste.pagina_firma = a.pagina;
+    if (tieneCajasPaginas(a)) ajuste.posiciones_paginas = posicionesPaginasParaPython(a);
     if (Object.keys(ajuste).length) salida[id] = ajuste;
   }
   return salida;
@@ -890,11 +932,27 @@ function construirMiniaturas() {
       "button",
       { class: "miniatura", type: "button", "data-pagina": n, "aria-label": `Ir a la página ${n}`, onclick: () => irAPagina(n) },
       hoja,
-      h("span", {}, String(n)),
+      h("span", { class: "miniatura-num" }, String(n)),
     );
+    actualizarMarcaPropia(boton);
     el.miniaturas.append(h("li", {}, boton));
     observador.observe(boton);
   }
+}
+
+// Las páginas cuyo sello tiene posición propia llevan un punto junto al número.
+function actualizarMarcaPropia(boton) {
+  const a = ajusteActual();
+  const n = Number(boton.dataset.pagina);
+  const propia = Boolean(a && a.cajasPaginas && a.cajasPaginas[n - 1]);
+  boton.classList.toggle("posicion-propia", propia);
+  boton.setAttribute("aria-label", propia ? `Ir a la página ${n} (sello con posición propia)` : `Ir a la página ${n}`);
+  if (propia) boton.title = "El sello de esta página tiene su propia posición";
+  else boton.removeAttribute("title");
+}
+
+function actualizarMarcasPropias() {
+  for (const boton of el.miniaturas.querySelectorAll(".miniatura")) actualizarMarcaPropia(boton);
 }
 
 async function dibujarMiniatura(doc, n, boton) {
@@ -937,7 +995,7 @@ function actualizarMarca(n) {
   datos.marca.hidden = !visible;
   datos.marca.classList.toggle("es-campo", n === campo);
   if (!visible) return;
-  const r = cajaAPixeles(datos.vp, datos.view);
+  const r = cajaAPixeles(datos.vp, datos.view, cajaDePagina(n));
   Object.assign(datos.marca.style, {
     left: `${(r.left / datos.vp.width) * 100}%`,
     top: `${(r.top / datos.vp.height) * 100}%`,
@@ -1024,14 +1082,18 @@ function posicionarSello() {
   aplicarRect(cajaAPixeles(estado.viewport, estado.vistaPdf));
 }
 
-// Mover el sello cambia solo la posición del documento a la vista (su posición
-// propia); la común se cambia con «Aplicar esta posición a todos».
+// Mover el sello cambia solo la posición de la página a la vista en este
+// documento; «Aplicar a todas las páginas» la extiende al documento y
+// «Aplicar a todos los documentos», a todos.
 function confirmarCaja() {
   const a = ajusteEditable();
   if (!a) return;
-  const primeraVez = !a.caja;
-  a.caja = pixelesACaja(rectSello());
-  actualizarMarcas();
+  const primeraVez = !a.caja && !tieneCajasPaginas(a);
+  if (!a.cajasPaginas) a.cajasPaginas = {};
+  a.cajasPaginas[estado.pagina - 1] = pixelesACaja(rectSello());
+  actualizarMarca(estado.pagina);
+  const boton = el.miniaturas.querySelector(`[data-pagina="${estado.pagina}"]`);
+  if (boton) actualizarMarcaPropia(boton);
   if (primeraVez) renderizarCola(); // marca «posición propia» en la lista
 }
 
@@ -1219,7 +1281,10 @@ function posicionAjustadaAlTipo(c, anterior, tipo) {
 
 function cajaDelTipo(anterior, tipo) {
   estado.caja = posicionAjustadaAlTipo(estado.caja, anterior, tipo);
-  for (const a of Object.values(estado.ajustes)) if (a.caja) a.caja = posicionAjustadaAlTipo(a.caja, anterior, tipo);
+  for (const a of Object.values(estado.ajustes)) {
+    if (a.caja) a.caja = posicionAjustadaAlTipo(a.caja, anterior, tipo);
+    for (const [i, c] of Object.entries(a.cajasPaginas || {})) a.cajasPaginas[i] = posicionAjustadaAlTipo(c, anterior, tipo);
+  }
   guardarPreferencia("caja", estado.caja);
 }
 
@@ -1360,7 +1425,9 @@ function actualizarBotonFirmar() {
   el.btnCerrarDoc.disabled = estado.firmando;
   el.btnAbrir.disabled = estado.firmando;
   el.btnAbrirVacio.disabled = estado.firmando;
-  el.btnPosicionTodos.disabled = estado.firmando || !estado.info || !estado.actualId;
+  const sinDocumento = estado.firmando || !estado.info || !estado.actualId;
+  el.btnPosicionPaginas.disabled = sinDocumento;
+  el.btnPosicionTodos.disabled = sinDocumento;
   actualizarDestino();
 }
 
@@ -1450,7 +1517,8 @@ async function firmar() {
   const ajuste = ajusteActual();
   const opciones = {
     ...opcionesComunes(),
-    caja: cajaVisible(),
+    caja: cajaDocumento(),
+    posiciones_paginas: posicionesPaginasParaPython(ajuste),
     paginas: document.querySelector('input[name="paginas"]:checked').value,
     pagina_firma: ajuste && ajuste.pagina != null ? ajuste.pagina : -1,
     destino,
@@ -2034,6 +2102,7 @@ function iniciar() {
   el.btnAgregar.addEventListener("click", agregarDialogo);
   el.btnVaciar.addEventListener("click", vaciarCola);
   el.btnCerrarDoc.addEventListener("click", cerrarDocumento);
+  el.btnPosicionPaginas.addEventListener("click", aplicarATodasLasPaginas);
   el.btnPosicionTodos.addEventListener("click", aplicarPosicionATodos);
   el.tabFirmar.addEventListener("click", () => mostrarVista("firmar"));
   el.tabValidar.addEventListener("click", () => mostrarVista("validar"));

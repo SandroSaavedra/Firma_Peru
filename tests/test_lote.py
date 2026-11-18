@@ -434,6 +434,42 @@ def test_ajuste_por_documento_solo_se_aplica_a_ese(api, cng, tmp_path):
     assert _campo_de_firma(salidas[2]) == (2, rect(CAJA))
 
 
+def _rects_por_pagina(ruta) -> list[tuple[float, ...]]:
+    """/Rect del widget de firma de cada página."""
+    with open(ruta, "rb") as f:
+        reader = PdfFileReader(f, strict=False)
+        rects = []
+        for indice in range(int(reader.root["/Pages"]["/Count"])):
+            pagina = reader.find_page_for_modification(indice)[0].get_object()
+            (anot,) = [a.get_object() for a in pagina["/Annots"]]
+            rects.append(tuple(round(float(v), 2) for v in anot["/Rect"]))
+        return rects
+
+
+def test_posicion_por_pagina_solo_se_aplica_a_esa_pagina_de_ese_documento(api, cng, tmp_path):
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf")
+    cola = api.agregar_rutas([str(r) for r in rutas])["cola"]
+    propia = {"x": 0.05, "y": 0.8}
+    ajustes = {
+        cola[1]["id"]: {
+            "caja": propia,
+            "posiciones_paginas": {"1": {"x": 0.3, "y": 0.4}, "7": {"x": 0.3, "y": 0.4}, "z": None},
+        },
+    }
+    r = api.firmar_lote({"caja": CAJA, "paginas": "todas", "ajustes": ajustes})
+    assert r["ok"] and len(r["firmados"]) == 2, r
+
+    def rect(caja):
+        x, y = round(caja["x"] * 595, 2), round(caja["y"] * 842, 2)
+        return x, y, round(x + 160, 2), round(y + 40, 2)
+
+    salidas = [f["salida"] for f in r["firmados"]]
+    assert _rects_por_pagina(salidas[0]) == [rect(CAJA)] * 3
+    assert _rects_por_pagina(salidas[1]) == [rect(propia), rect({"x": 0.3, "y": 0.4}), rect(propia)]
+    for salida in salidas:
+        assert len(validar_pdf(salida, permitir_red=False)) == 1
+
+
 def test_firmar_mas_documentos_quita_solo_los_firmados(api, cng, tmp_path):
     rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf")
     falso = tmp_path / "falso.pdf"

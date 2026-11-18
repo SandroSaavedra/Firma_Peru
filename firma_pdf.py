@@ -11,6 +11,9 @@ Convención de coordenadas (la interfaz debe usar la misma):
     FRACCIONES (0..1) de la "vista" de la página: la intersección de /CropBox
     y /MediaBox (lo mismo que `page.view` en pdf.js). Origen abajo a la
     izquierda, espacio PDF SIN ROTAR.
+  - Cada página puede tener su propia posición (`posiciones_paginas`); las
+    demás usan la del documento. Todos los sellos siguen siendo widgets del
+    mismo campo de firma: cambia solo su /Rect.
   - El tamaño del sello es fijo por tipo y en puntos PDF (TAMANOS_SELLO): mide
     lo mismo en cualquier tamaño de página. Si en la posición pedida no cabe,
     se desplaza hasta quedar dentro de la página.
@@ -38,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -145,6 +149,8 @@ def posicion_predeterminada(tipo: str) -> PosicionRelativa:
 @dataclass
 class OpcionesFirma:
     posicion: PosicionRelativa | None = None  # None = posición predeterminada del tipo
+    # Posición propia de algunas páginas (índice desde 0); las demás usan `posicion`.
+    posiciones_paginas: dict[int, PosicionRelativa] | None = None
     paginas: str = "todas"  # "todas" | "ultima"
     pagina_firma: int = -1  # página con el campo de firma real (negativo = desde el final)
     tipo: TipoSello = "firma"
@@ -191,6 +197,25 @@ def rect_sello(posicion: PosicionRelativa, vista, tipo: str) -> tuple[float, flo
     x = max(x0, min(x0 + posicion.x * (x1 - x0), x1 - ancho))
     y = max(y0, min(y0 + posicion.y * (y1 - y0), y1 - alto))
     return x, y, x + ancho, y + alto
+
+
+def _validar_posiciones_paginas(posiciones, total: int) -> dict[int, PosicionRelativa]:
+    """Comprueba las posiciones propias por página: índices del documento y x, y en 0..1."""
+    if not posiciones:
+        return {}
+    resultado = {}
+    for indice, posicion in posiciones.items():
+        if isinstance(indice, bool) or not isinstance(indice, int) or not 0 <= indice < total:
+            raise ErrorFirma(
+                f"La posición del sello indica una página que no existe ({indice!r}; el PDF tiene {total})."
+            )
+        valores = (getattr(posicion, "x", None), getattr(posicion, "y", None))
+        if not isinstance(posicion, PosicionRelativa) or not all(
+            isinstance(v, (int, float)) and math.isfinite(v) and -_TOLERANCIA <= v <= 1 + _TOLERANCIA for v in valores
+        ):
+            raise ErrorFirma(f"La posición del sello en la página {indice + 1} está fuera de la página.")
+        resultado[indice] = posicion
+    return resultado
 
 
 def _rectangulo(valor):
@@ -626,12 +651,14 @@ async def _firmar_con_paso_previo(pdf_signer, writer, salida, paso_previo):
     await firmado.post_signature_processing(salida_real)
 
 
-def _agregar_widgets(writer, campo: str, paginas, pagina_firma: int, posicion: PosicionRelativa, tipo: str):
+def _agregar_widgets(writer, campo: str, paginas, pagina_firma: int, posicion_de, tipo: str):
     """
     Agrega al campo de firma `campo` un widget por cada página de `paginas`
-    (además del que pyHanko ya creó en `pagina_firma`). El sello mide lo mismo
-    en todas las páginas, así que todos los widgets comparten el XObject de
-    apariencia del campo (mismo sello y misma hora, la de la firma). Clic en
+    (además del que pyHanko ya creó en `pagina_firma`), en la posición que
+    devuelve `posicion_de(índice)`. El sello mide lo mismo en todas las páginas
+    y la apariencia se dibuja en coordenadas propias (/BBox), así que todos los
+    widgets comparten el XObject de apariencia del campo (mismo sello y misma
+    hora, la de la firma) aunque cada uno tenga su /Rect. Clic en
     cualquiera = estado de la firma en Acrobat (un campo con varios widgets,
     ISO 32000-1 § 12.7.3.1).
     """
@@ -647,7 +674,7 @@ def _agregar_widgets(writer, campo: str, paginas, pagina_firma: int, posicion: P
         if indice == pagina_firma:
             hijos.append(widget_firma_ref)
             continue
-        rect = rect_sello(posicion, vista_de_pagina(writer, indice), tipo)
+        rect = rect_sello(posicion_de(indice), vista_de_pagina(writer, indice), tipo)
         pagina_ref = writer.find_page_for_modification(indice)[0]
         widget = generic.DictionaryObject(
             {
@@ -709,6 +736,10 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
         pagina_firma = opciones.pagina_firma if opciones.pagina_firma >= 0 else total + opciones.pagina_firma
         if not 0 <= pagina_firma < total:
             raise ErrorFirma(f"La página de firma {pagina_firma + 1} no existe (el PDF tiene {total}).")
+        posiciones_paginas = _validar_posiciones_paginas(opciones.posiciones_paginas, total)
+
+        def posicion_de(indice: int) -> PosicionRelativa:
+            return posiciones_paginas.get(indice, posicion)
 
         firmas_previas = len(writer.prev.embedded_signatures)
         if _nivel_docmdp(writer.prev) == fields.MDPPerm.NO_CHANGES.value:
@@ -726,7 +757,7 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
             paginas = list(range(total))
 
         campo = _nombre_campo_libre(writer, opciones.nombre_campo)
-        caja_campo = rect_sello(posicion, vista_de_pagina(writer, pagina_firma), tipo)
+        caja_campo = rect_sello(posicion_de(pagina_firma), vista_de_pagina(writer, pagina_firma), tipo)
         fields.append_signature_field(
             writer,
             fields.SigFieldSpec(
@@ -750,7 +781,7 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
         if varios_widgets:
 
             def agregar_widgets(_sesion):
-                _agregar_widgets(writer, campo, paginas, pagina_firma, posicion, tipo)
+                _agregar_widgets(writer, campo, paginas, pagina_firma, posicion_de, tipo)
 
             asyncio.run(_firmar_con_paso_previo(pdf_signer, writer, buffer, agregar_widgets))
         else:

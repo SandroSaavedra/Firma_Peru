@@ -235,9 +235,13 @@
             <label><input type="radio" name="pagina-firma" value="ultima" checked><span>Última página</span></label>
             <label><input type="radio" name="pagina-firma" value="actual"><span id="lbl-pagina-actual">Página actual</span></label>
           </div>
-          <p class="ayuda" id="txt-campo-ayuda">Arrastre el sello sobre la página para ubicarlo; su tamaño es fijo. La posición se aplica igual en todas las páginas.</p>
-          <button class="btn btn-secundario btn-chico btn-posicion-todos" id="btn-posicion-todos" type="button" disabled
-            title="La posición del sello en este documento pasa a todos los documentos de la lista y queda como predeterminada">Aplicar esta posición a todos</button>
+          <p class="ayuda" id="txt-campo-ayuda">Arrastre el sello sobre la página para ubicarlo; su tamaño es fijo. Lo que mueva se aplica solo a esta página.</p>
+          <div class="botones-posicion">
+            <button class="btn btn-secundario btn-chico" id="btn-posicion-paginas" type="button" disabled
+              title="La posición del sello en esta página pasa a todas las páginas de este documento">Aplicar a todas las páginas</button>
+            <button class="btn btn-secundario btn-chico" id="btn-posicion-todos" type="button" disabled
+              title="La posición del sello en esta página pasa a todas las páginas de todos los documentos de la lista y queda como predeterminada">Aplicar a todos los documentos</button>
+          </div>
         </fieldset>
 
         <div class="campo">

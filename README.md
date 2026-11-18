@@ -29,6 +29,9 @@ python app.py
 1. Abra un PDF (botón **Agregar PDFs**, `Ctrl+O` o arrastrándolo a la ventana).
 2. Elija el **Tipo de firma** (**Firma** o **Visto bueno**) y, si quiere, elija otro motivo de la lista.
 3. Arrastre el sello a la posición deseada (o muévalo con las flechas). Su tamaño es fijo.
+   Lo que mueva se aplica solo a la página a la vista (en las miniaturas, un punto
+   junto al número marca las páginas con posición propia); **Aplicar a todas las
+   páginas** usa esa posición en todo el documento.
 4. Elija si el sello va en todas las páginas o solo en la página de la firma.
 5. Pulse **Firmar documento** (`Ctrl+Enter`) y escriba el PIN en la ventana de Windows.
 
@@ -49,12 +52,14 @@ lo quita de la lista y deja la ventana lista para otro. Las opciones de firma se
    lista y la papelera vacía la cola.
 2. El tipo, el motivo, el lugar y «Sello visible en» valen para **todos**. El
    campo de firma va en la última página de cada documento.
-3. La posición del sello es de cada documento: lo que mueva en uno se aplica
-   solo a ese (en la lista aparece «posición propia»). Los que no haya movido
-   usan la posición común. **Aplicar esta posición a todos** copia la posición
-   del documento a la vista a todos los de la lista y la deja como
-   predeterminada. **Página actual** también se aplica solo al documento a la
-   vista (y se limita a sus páginas).
+3. La posición del sello es de cada documento y de cada página: lo que mueva
+   se aplica solo a esa página de ese documento (en la lista aparece «posición
+   propia»). Las páginas que no haya movido usan la posición del documento, y
+   los documentos que no haya movido, la posición común. **Aplicar a todas las
+   páginas** usa la posición de la página a la vista en todo ese documento;
+   **Aplicar a todos los documentos** la copia a todas las páginas de todos los
+   de la lista y la deja como predeterminada. **Página actual** también se
+   aplica solo al documento a la vista (y se limita a sus páginas).
 4. Pulse **Firmar N documentos**. Se firman uno tras otro con una sola apertura
    de la llave del DNIe, para que Windows pueda pedir el PIN una sola vez (si la
    tarjeta exige el PIN en cada firma, lo pedirá en cada documento). **Cancelar**

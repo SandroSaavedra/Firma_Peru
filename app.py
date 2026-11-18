@@ -22,6 +22,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -405,6 +406,29 @@ def motivo_permitido(tipo: str, motivo) -> str | None:
     """
     motivo = motivo.strip() if isinstance(motivo, str) else ""
     return motivo if motivo in MOTIVOS_POR_TIPO.get(tipo, ()) else None
+
+
+def posiciones_por_pagina(valor, total_paginas: int | None = None) -> dict[int, PosicionRelativa]:
+    """
+    Posiciones propias por página que envía la interfaz: {"índice": {x, y}},
+    índice desde 0 (en JSON las claves son texto). Se descartan las entradas mal
+    formadas, con x o y fuera de 0..1 o de páginas que el documento no tiene:
+    esas páginas usan la posición del documento.
+    """
+    if not isinstance(valor, dict):
+        return {}
+    resultado = {}
+    for clave, caja in valor.items():
+        try:
+            indice = int(str(clave))
+            x, y = float(caja["x"]), float(caja["y"])
+        except (TypeError, ValueError, KeyError, IndexError):
+            continue
+        if indice < 0 or (total_paginas is not None and indice >= total_paginas):
+            continue
+        if all(math.isfinite(v) and 0 <= v <= 1 for v in (x, y)):
+            resultado[indice] = PosicionRelativa(x=x, y=y)
+    return resultado
 
 
 class Api:
@@ -958,7 +982,13 @@ class Api:
         entrada = Path(self._pdf["archivo"])
         try:
             preparar_imagenes_iniciales()
-            opts = self._opciones_firma(opciones, opciones.get("caja"), int(opciones.get("pagina_firma", -1)))
+            opts = self._opciones_firma(
+                opciones,
+                opciones.get("caja"),
+                int(opciones.get("pagina_firma", -1)),
+                opciones.get("posiciones_paginas"),
+                item["paginas"] if item else None,
+            )
             destino = opciones.get("destino")
             salida = Path(destino) if destino else ruta_salida_predeterminada(entrada, opts.tipo)
             if salida.suffix.lower() != ".pdf":
@@ -989,17 +1019,26 @@ class Api:
             self._marcar(item, "error", mensaje_de_error(error))
 
     @staticmethod
-    def _opciones_firma(opciones: dict, caja: dict | None, pagina_firma: int) -> OpcionesFirma:
+    def _opciones_firma(
+        opciones: dict,
+        caja: dict | None,
+        pagina_firma: int,
+        posiciones_paginas=None,
+        total_paginas: int | None = None,
+    ) -> OpcionesFirma:
         """
         Opciones comunes de la interfaz (tipo, motivo, lugar, páginas) más la
         caja y la página del campo. De la caja solo se usa la posición (x, y):
         el tamaño del sello es fijo por tipo y se ignoran «ancho» y «alto». El
         motivo debe ser uno de la lista del tipo; si no, se usa el predeterminado.
         El logo de «Firma» es siempre el inicial (`preparar_logo`).
+        `posiciones_paginas` son las posiciones propias de algunas páginas
+        ({"índice": {x, y}}, índice desde 0; ver `posiciones_por_pagina`).
         """
         tipo = opciones.get("tipo") or leer_config()["tipo"]
         return OpcionesFirma(
             posicion=PosicionRelativa(x=float(caja["x"]), y=float(caja["y"])) if caja else None,
+            posiciones_paginas=posiciones_por_pagina(posiciones_paginas, total_paginas),
             paginas=opciones.get("paginas", "todas"),
             pagina_firma=pagina_firma,
             tipo=tipo,
@@ -1019,8 +1058,9 @@ class Api:
         sesión CNG. El avance se envía a la interfaz con `progresoLote`.
 
         `opciones`: las comunes (tipo, motivo, lugar, paginas, caja), `en_carpeta`
-        (guardar todo en una carpeta) y `ajustes` ({id: {caja, pagina_firma}}) para
-        los documentos con posición o página propias.
+        (guardar todo en una carpeta) y `ajustes` ({id: {caja, pagina_firma,
+        posiciones_paginas}}) para los documentos con posición, página del campo
+        o posiciones por página propias.
         """
         if not self._firmando.acquire(blocking=False):
             return {"ok": False, "mensaje": "Ya hay una firma en curso."}
@@ -1071,7 +1111,13 @@ class Api:
         pagina = ajuste.get("pagina_firma")
         # «Página actual» propia de este documento, limitada a sus páginas; si no, la última.
         pagina_firma = -1 if pagina is None else min(max(int(pagina), 0), item["paginas"] - 1)
-        opts = self._opciones_firma(opciones, ajuste.get("caja") or opciones.get("caja"), pagina_firma)
+        opts = self._opciones_firma(
+            opciones,
+            ajuste.get("caja") or opciones.get("caja"),
+            pagina_firma,
+            ajuste.get("posiciones_paginas"),
+            item["paginas"],
+        )
         if carpeta is not None and (en_carpeta or not item["ruta"]):
             salida = ruta_salida_predeterminada(carpeta / nombre_seguro(item["nombre"]), opts.tipo)
         else:

@@ -273,6 +273,11 @@ kbd { font: 600 11px var(--fuente); background: var(--superficie); border: 1px s
   pointer-events: none;
 }
 .miniatura-marca.es-campo { background: color-mix(in srgb, var(--sello-borde) 30%, transparent); }
+/* Página con posición propia del sello: un punto discreto junto al número. */
+.miniatura.posicion-propia .miniatura-num::after {
+  content: ""; display: inline-block; width: 5px; height: 5px; margin-left: 5px;
+  border-radius: 50%; background: var(--sello-borde); vertical-align: middle;
+}
 
 .visor { display: grid; grid-template-rows: 48px 1fr; min-width: 0; min-height: 0; background: var(--lienzo); }
 .visor-barra {
@@ -424,7 +429,7 @@ kbd { font: 600 11px var(--fuente); background: var(--superficie); border: 1px s
 .interruptor input:checked + .interruptor-pista { background: var(--acento); }
 .interruptor input:checked + .interruptor-pista::after { transform: translateX(14px); }
 .interruptor input:focus-visible + .interruptor-pista { box-shadow: var(--foco); }
-.btn-posicion-todos { margin-top: 10px; }
+.botones-posicion { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 
 .panel-pie {
   position: sticky; bottom: 0; margin: auto -18px 0; padding: 14px 18px 16px;

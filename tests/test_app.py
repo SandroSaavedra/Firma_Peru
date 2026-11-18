@@ -592,6 +592,65 @@ def test_firmar_ignora_el_tamano_que_envia_la_interfaz(api, pdf_multipagina):
     assert rect == pytest.approx((59.5, 84.2, 219.5, 124.2), abs=0.01)  # 160 x 40 pt en A4
 
 
+def _rects_por_pagina(ruta) -> list[tuple[float, ...]]:
+    """/Rect del widget de firma de cada página (una sola firma con un widget por página)."""
+    with open(ruta, "rb") as f:
+        reader = PdfFileReader(f, strict=False)
+        rects = []
+        for indice in range(int(reader.root["/Pages"]["/Count"])):
+            pagina = reader.find_page_for_modification(indice)[0].get_object()
+            (anot,) = [a.get_object() for a in pagina["/Annots"]]
+            rects.append(tuple(round(float(v), 2) for v in anot["/Rect"]))
+        return rects
+
+
+def test_firmar_usa_la_posicion_propia_de_cada_pagina(api, pdf_multipagina):
+    # pdf_multipagina: A4, carta horizontal (792 x 612) y A4.
+    api.abrir_ruta(str(pdf_multipagina))
+    r = api.firmar(
+        {
+            "paginas": "todas",
+            "tipo": "firma",
+            "caja": {"x": 0.1, "y": 0.1},
+            "posiciones_paginas": {"1": {"x": 0.5, "y": 0.5}, "2": {"x": 0.2, "y": 0.8}},
+        }
+    )
+    assert r["ok"], r
+    assert _rects_por_pagina(r["salida"]) == [
+        (59.5, 84.2, 219.5, 124.2),
+        (396.0, 306.0, 556.0, 346.0),
+        (119.0, 673.6, 279.0, 713.6),
+    ]
+    assert len(api.validar(r["salida"])["firmas"]) == 1
+
+
+def test_posiciones_por_pagina_mal_formadas_se_ignoran(api, pdf_multipagina):
+    api.abrir_ruta(str(pdf_multipagina))
+    malas = {
+        "x": {"x": 0.5, "y": 0.5},  # índice no numérico
+        "-1": {"x": 0.5, "y": 0.5},
+        "3": {"x": 0.5, "y": 0.5},  # el PDF tiene 3 páginas (0..2)
+        "0": {"x": "nan", "y": 0.5},
+        "1": {"x": 1.5, "y": 0.5},
+        "2": [0.5, 0.5],
+    }
+    for posiciones in (malas, ["no", "es", "un", "objeto"], "texto"):
+        r = api.firmar({"paginas": "todas", "tipo": "firma", "caja": {"x": 0.1, "y": 0.1}, "posiciones_paginas": posiciones})
+        assert r["ok"], r
+        a4 = (59.5, 84.2, 219.5, 124.2)
+        assert _rects_por_pagina(r["salida"]) == [a4, (79.2, 61.2, 239.2, 101.2), a4]
+        Path(r["salida"]).unlink()
+
+
+def test_opciones_firma_convierte_las_posiciones_por_pagina():
+    opts = app.Api._opciones_firma(
+        {"tipo": "firma"}, {"x": 0.1, "y": 0.2}, -1, {"0": {"x": 0.3, "y": 0.4}, "9": {"x": 0.3, "y": 0.4}}, 5
+    )
+    assert opts.posicion == app.PosicionRelativa(x=0.1, y=0.2)
+    assert opts.posiciones_paginas == {0: app.PosicionRelativa(x=0.3, y=0.4)}
+    assert app.Api._opciones_firma({"tipo": "firma"}, None, -1).posiciones_paginas == {}
+
+
 @pytest.mark.parametrize(
     "tipo, motivo, esperado",
     [
