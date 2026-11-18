@@ -10,6 +10,10 @@ from pyhanko.pdf_utils.reader import PdfFileReader
 
 import app
 
+# Valores de app.py antes de que el fixture `appdata` (conftest) los reemplace en cada prueba.
+LOGO_INICIAL_ORIGINAL = app.LOGO_INICIAL
+LOGO_INICIAL_ANTERIOR_ORIGINAL = getattr(app, "LOGO_INICIAL_ANTERIOR", None)
+
 
 @pytest.fixture
 def api(monkeypatch, firmante):
@@ -244,11 +248,27 @@ def test_firmar_pdf_abierto_por_bytes_cancelado_no_escribe_nada(api, pdf_multipa
 # --- tipo de sello, logo y configuración persistente ---------------------------
 
 
-def _imagen(ruta: Path, formato: str, tamano=(300, 100)):
+def _imagen(ruta: Path, formato: str, tamano=(300, 100), color=(200, 40, 40)):
     from PIL import Image
 
-    Image.new("RGB", tamano, (200, 40, 40)).save(ruta, formato)
+    Image.new("RGB", tamano, color).save(ruta, formato)
     return ruta
+
+
+def _pixeles(ruta: Path):
+    """(modo, tamaño, píxeles) de una imagen, para comparar copias sin depender del codificador PNG."""
+    from PIL import Image
+
+    with Image.open(ruta) as imagen:
+        imagen.load()
+        return imagen.mode, imagen.size, imagen.tobytes()
+
+
+def _color_de_esquina(ruta: Path):
+    from PIL import Image
+
+    with Image.open(ruta) as imagen:
+        return imagen.convert("RGB").getpixel((0, 0))
 
 
 def test_config_predeterminada(api):
@@ -341,6 +361,105 @@ def test_logo_inicial_se_busca_junto_al_ejecutable(monkeypatch, tmp_path):
     monkeypatch.setattr(app.sys, "executable", str(tmp_path / "FirmadorDNIe.exe"))
     monkeypatch.setattr(app, "LOGO_INICIAL", app.Path("src") / "firma_digital_vivienda.png")
     assert app.ruta_logo_inicial() == tmp_path.resolve() / "src" / "firma_digital_vivienda.png"
+
+
+def test_logo_inicial_predeterminado_es_el_emblema_peruano():
+    assert LOGO_INICIAL_ORIGINAL == Path("src") / "Emblema peruano con firma digital.png"
+    assert LOGO_INICIAL_ANTERIOR_ORIGINAL == Path("src") / "firma_digital_vivienda.png"
+
+
+@pytest.fixture
+def logos_iniciales(tmp_path):
+    """Logo inicial anterior (rojo) y actual (azul), con tamaños distintos."""
+    carpeta = tmp_path / "src"
+    carpeta.mkdir()
+    anterior = _imagen(carpeta / "anterior.png", "PNG", (437, 259), (200, 40, 40))
+    nuevo = _imagen(carpeta / "nuevo.png", "PNG", (1000, 1000), (30, 60, 200))
+    return anterior, nuevo
+
+
+def _instalacion_anterior(api, monkeypatch, anterior, nuevo):
+    """Simula una instalación previa (que copió el logo anterior) y actualiza el programa."""
+    monkeypatch.setattr(app, "LOGO_INICIAL", anterior)
+    assert api.obtener_config()["logo"] is not None
+    monkeypatch.setattr(app, "LOGO_INICIAL", nuevo)
+    monkeypatch.setattr(app, "LOGO_INICIAL_ANTERIOR", anterior, raising=False)
+
+
+def test_configuracion_nueva_copia_el_logo_inicial_actual(api, appdata, logos_iniciales, monkeypatch):
+    anterior, nuevo = logos_iniciales
+    monkeypatch.setattr(app, "LOGO_INICIAL", nuevo)
+    monkeypatch.setattr(app, "LOGO_INICIAL_ANTERIOR", anterior, raising=False)
+
+    assert api.obtener_config()["logo"] is not None
+    _, tamano, _ = _pixeles(appdata / "FirmadorDNIe" / "logo.png")
+    assert tamano == (app.LADO_MAXIMO_LOGO, app.LADO_MAXIMO_LOGO)
+    assert _color_de_esquina(appdata / "FirmadorDNIe" / "logo.png") == (30, 60, 200)  # el emblema nuevo
+    assert app.leer_config()["logo_inicial_aplicado"] is True
+
+
+def test_logo_inicial_anterior_sin_cambios_se_reemplaza(api, appdata, logos_iniciales, monkeypatch):
+    anterior, nuevo = logos_iniciales
+    _instalacion_anterior(api, monkeypatch, anterior, nuevo)
+    guardado = appdata / "FirmadorDNIe" / "logo.png"
+    copia_anterior = _pixeles(guardado)
+
+    assert api.obtener_config()["logo"] is not None
+    assert _pixeles(guardado) != copia_anterior
+    assert _color_de_esquina(guardado) == (30, 60, 200)  # el emblema nuevo
+    config = app.leer_config()
+    assert config["logo"] == "logo.png" and config["logo_inicial_aplicado"] is True
+    assert anterior.is_file() and nuevo.is_file()  # los originales no se tocan
+
+
+def test_logo_elegido_por_el_usuario_no_se_reemplaza(api, appdata, logos_iniciales, monkeypatch, tmp_path):
+    anterior, nuevo = logos_iniciales
+    monkeypatch.setattr(app, "LOGO_INICIAL", anterior)
+    assert api.obtener_config()["logo"] is not None
+    api._asignar_ventana(VentanaFalsa([str(_imagen(tmp_path / "propio.png", "PNG", (437, 259), (10, 150, 10)))]))
+    assert api.elegir_logo()["ok"]
+    guardado = appdata / "FirmadorDNIe" / "logo.png"
+    propio = guardado.read_bytes()
+
+    monkeypatch.setattr(app, "LOGO_INICIAL", nuevo)
+    monkeypatch.setattr(app, "LOGO_INICIAL_ANTERIOR", anterior, raising=False)
+    assert api.obtener_config()["logo"] is not None
+    assert guardado.read_bytes() == propio
+
+
+def test_logo_quitado_no_vuelve_tras_actualizar(api, appdata, logos_iniciales, monkeypatch):
+    anterior, nuevo = logos_iniciales
+    _instalacion_anterior(api, monkeypatch, anterior, nuevo)
+    assert api.quitar_logo()["ok"]
+
+    assert api.obtener_config()["logo"] is None
+    assert not (appdata / "FirmadorDNIe" / "logo.png").exists()
+    config = app.leer_config()
+    assert config["logo"] is None and config["logo_inicial_aplicado"] is True
+
+
+def test_sin_logo_anterior_junto_al_programa_no_se_toca(api, appdata, logos_iniciales, monkeypatch):
+    anterior, nuevo = logos_iniciales
+    _instalacion_anterior(api, monkeypatch, anterior, nuevo)
+    guardado = appdata / "FirmadorDNIe" / "logo.png"
+    copia_anterior = guardado.read_bytes()
+    anterior.unlink()  # no hay con qué comparar: no se puede saber si es la copia de fábrica
+
+    assert api.obtener_config()["logo"] is not None
+    assert guardado.read_bytes() == copia_anterior
+
+
+def test_actualizar_logo_inicial_es_idempotente(api, appdata, logos_iniciales, monkeypatch):
+    anterior, nuevo = logos_iniciales
+    _instalacion_anterior(api, monkeypatch, anterior, nuevo)
+    app.preparar_imagenes_iniciales()
+    guardado = appdata / "FirmadorDNIe" / "logo.png"
+    archivo = appdata / "FirmadorDNIe" / "config.json"
+    tras_la_primera = (guardado.read_bytes(), guardado.stat().st_mtime_ns, archivo.read_bytes())
+
+    app.preparar_imagenes_iniciales()
+    app.preparar_imagenes_iniciales()
+    assert (guardado.read_bytes(), guardado.stat().st_mtime_ns, archivo.read_bytes()) == tras_la_primera
 
 
 def test_imagen_vb_persiste_y_se_quita(api, appdata, tmp_path):

@@ -60,7 +60,10 @@ TAM_MAXIMO_LOGO = 20 * 1024 * 1024  # imagen (logo o visto bueno) que se acepta
 LADO_MAXIMO_LOGO = 800  # px: la copia guardada se reduce para no inflar los PDF
 # Imágenes que el usuario deja junto al programa (no se distribuyen con la
 # aplicación). Cada una se copia a la configuración la primera vez.
-LOGO_INICIAL = Path("src") / "firma_digital_vivienda.png"
+LOGO_INICIAL = Path("src") / "Emblema peruano con firma digital.png"
+# Logo inicial de versiones anteriores: si la copia guardada sigue siendo la de
+# este archivo (el usuario no la cambió), se reemplaza por LOGO_INICIAL.
+LOGO_INICIAL_ANTERIOR = Path("src") / "firma_digital_vivienda.png"
 IMAGEN_VB_INICIAL = Path("src") / "Icono circular con marca roja.png"
 # Clave en config.json -> (archivo de la copia, constante con el original, bandera «ya se aplicó»).
 IMAGENES = {
@@ -265,13 +268,37 @@ def ruta_logo_inicial() -> Path:
     return ruta_imagen_inicial("logo")
 
 
+def actualizar_logo_inicial_anterior():
+    """
+    Las versiones anteriores copiaban LOGO_INICIAL_ANTERIOR como logo. Si la
+    copia guardada sigue siendo exactamente esa (mismos píxeles que produciría
+    `copiar_imagen`), se reemplaza por LOGO_INICIAL. Un logo elegido por el
+    usuario o quitado con «Quitar logo» no se toca, y tampoco si el archivo
+    anterior ya no está junto al programa (no hay con qué comparar).
+    """
+    guardado = ruta_imagen_guardada("logo")
+    anterior = carpeta_aplicacion() / LOGO_INICIAL_ANTERIOR
+    actual = ruta_logo_inicial()
+    if guardado is None or not anterior.is_file() or not actual.is_file():
+        return
+    try:
+        if not es_copia_de(guardado, anterior, "logo"):
+            return
+        destino = copiar_imagen(actual, "logo")
+        guardar_config({**leer_config(), "logo": destino.name, IMAGENES["logo"][2]: True})
+        logger.info("Se reemplazó el logo inicial anterior por %s.", actual.name)
+    except (ErrorFirma, OSError) as e:
+        logger.warning("No se pudo actualizar el logo inicial anterior: %s", e)
+
+
 def preparar_imagenes_iniciales():
     """
     Para el logo y la imagen de visto bueno: si aún no se aplicó y el archivo
     de `src/` existe junto al programa, se copia a la configuración (el original
     no se toca). Se hace una sola vez: si el usuario quita o cambia la imagen,
-    se respeta.
+    se respeta. Antes, el logo inicial anterior sin cambios se actualiza.
     """
+    actualizar_logo_inicial_anterior()
     for clave, (_, _, bandera) in IMAGENES.items():
         config = leer_config()
         if config[bandera] or config[clave]:
@@ -309,11 +336,11 @@ def _imagen_para_interfaz(ruta: Path | None) -> dict | None:
     return {"nombre": ruta.name, "datos": "data:image/png;base64," + base64.b64encode(datos).decode("ascii")}
 
 
-def copiar_imagen(origen: Path, clave: str = "logo") -> Path:
+def imagen_reducida(origen: Path, clave: str = "logo"):
     """
-    Guarda una copia PNG de la imagen (reducida a LADO_MAXIMO_LOGO px, con
-    transparencia) en la carpeta de configuración. A la de visto bueno se le
-    quita el fondo blanco, igual que al firmar. ErrorFirma si no es una imagen.
+    Imagen (PIL) tal como se guarda en la configuración: reducida a
+    LADO_MAXIMO_LOGO px, con transparencia; a la de visto bueno se le quita el
+    fondo blanco, igual que al firmar. ErrorFirma si no es una imagen.
     """
     from PIL import Image, UnidentifiedImageError
 
@@ -331,6 +358,26 @@ def copiar_imagen(origen: Path, clave: str = "logo") -> Path:
     copia.thumbnail((LADO_MAXIMO_LOGO, LADO_MAXIMO_LOGO))
     if clave == "imagen_vb":
         copia = fondo_blanco_a_transparente(copia)
+    return copia
+
+
+def es_copia_de(guardada: Path, origen: Path, clave: str = "logo") -> bool:
+    """
+    True si `guardada` tiene los mismos píxeles que la copia que `copiar_imagen`
+    haría de `origen`. Se comparan píxeles y no bytes, para no depender del
+    codificador PNG.
+    """
+    from PIL import Image
+
+    esperada = imagen_reducida(origen, clave)
+    with Image.open(guardada) as imagen:
+        imagen.load()
+        return (imagen.mode, imagen.size) == (esperada.mode, esperada.size) and imagen.tobytes() == esperada.tobytes()
+
+
+def copiar_imagen(origen: Path, clave: str = "logo") -> Path:
+    """Guarda en la carpeta de configuración la copia PNG de `imagen_reducida`."""
+    copia = imagen_reducida(origen, clave)
     archivo = IMAGENES[clave][0]
     carpeta = carpeta_config()
     carpeta.mkdir(parents=True, exist_ok=True)

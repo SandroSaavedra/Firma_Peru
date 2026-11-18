@@ -92,11 +92,16 @@ certificado es de confianza según los certificados raíz de Windows.
   **Visto bueno**). Se guarda una copia en la misma carpeta; el fondo blanco se
   vuelve transparente. Sin imagen se dibuja una marca de verificación propia.
 - **Imágenes iniciales**: si junto al programa (o junto a `FirmadorDNIe.exe`)
-  existen `src\firma_digital_vivienda.png` (logo) o
+  existen `src\Emblema peruano con firma digital.png` (logo) o
   `src\Icono circular con marca roja.png` (visto bueno), se copian la primera
   vez. Si luego las quita con **Quitar logo** o **Quitar imagen**, no se vuelven
   a copiar. Estos archivos son suyos: no se incluyen en el ejecutable; cópielos
   junto a él si los necesita.
+- **Actualización del logo inicial**: las versiones anteriores usaban
+  `src\firma_digital_vivienda.png`. Si el logo guardado sigue siendo la copia
+  sin cambios de ese archivo (y este sigue junto al programa), al iniciar se
+  reemplaza por el emblema nuevo. Un logo elegido por usted o quitado con
+  **Quitar logo** no se toca.
 
 ### PDF que ya tienen firmas
 

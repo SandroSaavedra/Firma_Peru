@@ -79,10 +79,11 @@ def appdata(tmp_path, monkeypatch) -> Path:
     carpeta = tmp_path / "AppData"
     carpeta.mkdir()
     monkeypatch.setenv("APPDATA", str(carpeta))
-    # Las pruebas no dependen del logo real del usuario (src/firma_digital_vivienda.png).
+    # Las pruebas no dependen de las imágenes reales del usuario en src/.
     import app
 
     monkeypatch.setattr(app, "LOGO_INICIAL", tmp_path / "sin-logo-inicial.png", raising=False)
+    monkeypatch.setattr(app, "LOGO_INICIAL_ANTERIOR", tmp_path / "sin-logo-inicial-anterior.png", raising=False)
     monkeypatch.setattr(app, "IMAGEN_VB_INICIAL", tmp_path / "sin-imagen-vb-inicial.png", raising=False)
     return carpeta
 

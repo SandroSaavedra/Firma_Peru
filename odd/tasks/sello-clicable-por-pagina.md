@@ -19,6 +19,7 @@ Today `firma_pdf.py` draws the stamp with `TextStamp` into the page content of e
 
 ## Tasks
 - [x] T1 Multi-widget signature field for `paginas="todas"` + tests (route: delegated writer, trigger: preparation reading + pyHanko internals research + 2 files).
+- [x] T2 Default logo: src/Emblema peruano con firma digital.png, with migration from the old factory default (route: delegated writer, trigger: 2+ non-trivial files).
 
 ## Acceptance criteria
 - Every stamped page has a `/Widget` annotation whose field is the signed `/Sig` field.
@@ -31,9 +32,14 @@ Today `firma_pdf.py` draws the stamp with `TextStamp` into the page content of e
 
 ## Progress
 - Branch `feat/sello-clicable-por-pagina` created.
-- T1 done (uncommitted; commit is the parent's decision).
+- T1 done, commit `8e74544`.
   - Approach: pyHanko creates the field with `combine_annotation=False` (field + one widget on `pagina_firma`, so `get_single_field_annot` in `cms_embedder.py:464` still finds exactly one kid and draws the appearance). `firma_pdf._firmar_con_paso_previo` mirrors `PdfSigner.async_sign_pdf` (`pdf_signer.py:1477`) via the staged signing API and, between `prepare_tbs_document` and `digest_tbs_document`, `_agregar_widgets` appends one widget per other page to `/Kids` (same revision, covered by the ByteRange). Same-size pages reuse the signature widget's `/AP /N`; other sizes get one XObject per size rendered with `session.system_time`, so the date matches. No stamp is drawn into page content any more.
   - RED: 3 failing tests before implementation (`test_todas_sella_cada_pagina_y_una_sola_firma_pades`, `test_todas_segunda_firma_mantiene_valida_la_primera`, `test_campo_en_otra_pagina_usa_su_tamano`: no widget on non-signature pages).
   - GREEN: `python -m pytest -q`: 109 passed.
   - Manual check (600 pages, 2 sizes): signing 0.68 s; 600 kids in the field; 3 distinct appearance XObjects; after a V°B° signature, `validar_pdf`: first signature intacta/valida, FORM_FILLING, permitidas; second intacta/valida, NONE. Date text identical on widgets of different page sizes (checked with Helvetica).
   - Pending: Acrobat click check by the user.
+- T2 done (uncommitted; commit is the parent's decision).
+  - Approach: `LOGO_INICIAL` is now `src/Emblema peruano con firma digital.png`; the old default is kept as `LOGO_INICIAL_ANTERIOR`. `copiar_imagen` split into `imagen_reducida` (PIL image, no write) + save; `es_copia_de` compares mode, size and pixels (not PNG bytes, so it does not depend on the encoder). `actualizar_logo_inicial_anterior` runs first in `preparar_imagenes_iniciales`: it replaces the saved logo only when it is pixel-identical to the reduced old default and both src files exist. A custom logo, a removed logo (None + flag) or a missing old file are left untouched. No new config key. `imagen_vb` unchanged. README updated.
+  - RED: 2 failing before implementation (`test_logo_inicial_predeterminado_es_el_emblema_peruano`, `test_logo_inicial_anterior_sin_cambios_se_reemplaza`); the custom/removed/missing-old/idempotent tests passed as regression guards.
+  - GREEN: `python -m pytest -q`: 116 passed.
+  - Real-data read-only check: the saved logo in `%APPDATA%\FirmadorDNIe` matches the factory copy of `src/firma_digital_vivienda.png` (`es_copia_de` = True), so the migration will run on this PC at next startup.
