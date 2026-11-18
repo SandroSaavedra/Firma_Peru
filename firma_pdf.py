@@ -2,8 +2,9 @@
 Núcleo de firma de PDF, independiente de la interfaz (CLI o escritorio).
 
 Produce UNA sola firma criptográfica PAdES (subfilter ETSI.CAdES.detached)
-con un campo de firma visible y, opcionalmente, el mismo sello dibujado como
-contenido en las demás páginas.
+con un campo de firma visible. Con `paginas="todas"` ese único campo tiene un
+widget por página (/Kids), todos con el mismo sello: el sello de cada página
+es parte de la firma y al hacer clic en él el lector muestra su estado.
 
 Convención de coordenadas (la interfaz debe usar la misma):
   - La caja del sello se expresa en FRACCIONES (0..1) de la "vista" de la
@@ -14,10 +15,10 @@ Convención de coordenadas (la interfaz debe usar la misma):
     del sello se dibuja con la orientación del espacio sin rotar, es decir,
     girado junto con la página.
 
-PDF que ya tienen firmas: dibujar el sello como contenido en otras páginas
-modificaría el documento ya firmado y los validadores (Adobe, pyHanko) lo
-marcarían como un cambio no permitido. En ese caso solo se coloca el campo de
-firma visible (modo "solo_campo"), lo que sí está permitido. Si una firma de
+PDF que ya tienen firmas: agregar sellos en otras páginas modificaría el
+documento ya firmado y los validadores (Adobe, pyHanko) podrían marcarlo como
+un cambio no permitido. En ese caso solo se coloca el campo de firma visible
+en una página (modo "solo_campo"), lo que sí está permitido. Si una firma de
 certificación (DocMDP) prohíbe cualquier cambio, se rechaza la operación.
 
 Tipos de sello (sin borde, letra sin serifa: Arial incrustada si está
@@ -30,6 +31,7 @@ El motivo se escribe en el sello y también como /Reason de la firma.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
@@ -50,8 +52,9 @@ from pyhanko.pdf_utils.rw_common import find_inherited_value_in_tree
 from pyhanko.pdf_utils.text import TextBoxStyle
 from pyhanko.pdf_utils.writer import PdfFileWriter
 from pyhanko.sign import fields, signers
+from pyhanko.sign.signers.pdf_cms import PdfCMSSignedAttributes
 from pyhanko.sign.validation.pdf_embedded import read_certification_data
-from pyhanko.stamp import TextStamp, TextStampStyle
+from pyhanko.stamp import TextStampStyle
 
 logger = logging.getLogger("firmador")
 # fontTools avisa de cada tabla que no sabe reducir al incrustar la fuente; no aporta nada al usuario.
@@ -153,7 +156,7 @@ class ResultadoFirma:
     total_paginas: int
     paginas_selladas: list[int]
     pagina_firma: int
-    modo: str  # "contenido" (sello en páginas + campo) | "solo_campo"
+    modo: str  # "contenido" (documento sin firmas; con "todas", un widget por página) | "solo_campo"
     firmas_previas: int
     campo: str
 
@@ -278,15 +281,6 @@ def _nombre_campo_libre(handler, base: str) -> str:
     while f"{base}_{n}" in existentes:
         n += 1
     return f"{base}_{n}"
-
-
-def _asegurar_contenido(writer, indice):
-    """Algunas páginas no tienen /Contents; TextStamp lo necesita para agregar su flujo."""
-    ref, _ = writer.find_page_for_modification(indice)
-    pagina = ref.get_object()
-    if "/Contents" not in pagina:
-        pagina[pdf_name("/Contents")] = writer.add_object(generic.StreamObject(stream_data=b""))
-        writer.mark_update(ref)
 
 
 # --- estilos de sello -----------------------------------------------------------
@@ -584,6 +578,87 @@ def _misma_ruta(a, b) -> bool:
         return Path(a).resolve() == Path(b).resolve()
 
 
+# --- firma con un widget por página ----------------------------------------------
+
+
+async def _firmar_con_paso_previo(pdf_signer, writer, salida, paso_previo):
+    """
+    Lo mismo que `PdfSigner.async_sign_pdf` (API de firma por etapas de
+    pyHanko), pero llama a `paso_previo(sesion)` cuando el campo ya tiene su
+    apariencia y su valor (/V) y antes de escribir el documento: lo que agregue
+    ahí queda en la misma revisión y, por tanto, cubierto por la firma.
+    """
+    sesion = pdf_signer.init_signing_session(writer)
+    info_validacion = await sesion.perform_presign_validation(writer)
+    reservado = await sesion.estimate_signature_container_size(
+        info_validacion, tight=pdf_signer.signature_meta.tight_size_estimates
+    )
+    documento = sesion.prepare_tbs_document(validation_info=info_validacion, bytes_reserved=reservado)
+    paso_previo(sesion)
+    resumen, salida_real = documento.digest_tbs_document(output=salida)
+    firmado = await documento.perform_signature(
+        document_digest=resumen.document_digest,
+        pdf_cms_signed_attrs=PdfCMSSignedAttributes(
+            signing_time=sesion.system_time,
+            adobe_revinfo_attr=None if info_validacion is None else info_validacion.adobe_revinfo_attr,
+            cades_signed_attrs=pdf_signer.signature_meta.cades_signed_attr_spec,
+        ),
+    )
+    await firmado.post_signature_processing(salida_real)
+
+
+def _agregar_widgets(writer, sesion, campo: str, paginas, pagina_firma: int, caja: CajaRelativa, estilo_para):
+    """
+    Agrega al campo de firma `campo` un widget por cada página de `paginas`
+    (además del que pyHanko ya creó en `pagina_firma`). Todos muestran el mismo
+    sello con la misma hora (la de la firma) y comparten el XObject de
+    apariencia entre páginas del mismo tamaño. Clic en cualquiera = estado de
+    la firma en Acrobat (un campo con varios widgets, ISO 32000-1 § 12.7.3.1).
+    """
+    ((_, _, campo_ref),) = fields.enumerate_sig_fields(writer, with_name=campo)
+    campo_firma = campo_ref.get_object()
+    (widget_firma_ref,) = campo_firma["/Kids"]
+    widget_firma = widget_firma_ref.get_object()
+    widget_firma[pdf_name("/Parent")] = campo_ref
+
+    def clave_de(rect):
+        return round(rect[2] - rect[0], 2), round(rect[3] - rect[1], 2)
+
+    rect_firma = caja_absoluta(caja, vista_de_pagina(writer, pagina_firma))
+    apariencias = {clave_de(rect_firma): widget_firma["/AP"].raw_get("/N")}
+    hijos = generic.ArrayObject()
+    for indice in paginas:
+        if indice == pagina_firma:
+            hijos.append(widget_firma_ref)
+            continue
+        rect = caja_absoluta(caja, vista_de_pagina(writer, indice))
+        clave = clave_de(rect)
+        if clave not in apariencias:
+            estilo = estilo_para(*clave)
+            sello = estilo.create_stamp(
+                writer,
+                BoxConstraints(width=clave[0], height=clave[1]),
+                {"ts": sesion.system_time.strftime(estilo.timestamp_format)},
+            )
+            apariencias[clave] = sello.register()
+        pagina_ref = writer.find_page_for_modification(indice)[0]
+        widget = generic.DictionaryObject(
+            {
+                pdf_name("/Type"): pdf_name("/Annot"),
+                pdf_name("/Subtype"): pdf_name("/Widget"),
+                pdf_name("/F"): generic.NumberObject(int(widget_firma["/F"])),
+                pdf_name("/Rect"): generic.ArrayObject(generic.FloatObject(round(v, 4)) for v in rect),
+                pdf_name("/P"): pagina_ref,
+                pdf_name("/Parent"): campo_ref,
+                pdf_name("/AP"): generic.DictionaryObject({pdf_name("/N"): apariencias[clave]}),
+            }
+        )
+        widget_ref = writer.add_object(widget)
+        writer.register_annotation(pagina_ref, widget_ref)
+        hijos.append(widget_ref)
+    campo_firma[pdf_name("/Kids")] = hijos
+
+
 def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma | None = None) -> ResultadoFirma:
     """
     Firma `entrada` y escribe `salida`. `signer` es un `pyhanko` Signer (p. ej.
@@ -643,29 +718,23 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
         modo = "solo_campo" if firmas_previas else "contenido"
 
         paginas = [pagina_firma]
-        if modo == "contenido" and opciones.paginas == "todas":
+        # "todas": el campo de firma tiene un widget por página (/Kids), así
+        # el sello de cada página es parte de la firma y no contenido dibujado.
+        varios_widgets = modo == "contenido" and opciones.paginas == "todas"
+        if varios_widgets:
             paginas = list(range(total))
-            # Un mismo sello (XObject) se reutiliza en las páginas del mismo tamaño.
-            sellos: dict[tuple[float, float], TextStamp] = {}
-            for indice in paginas:
-                if indice == pagina_firma:
-                    continue
-                x1, y1, x2, y2 = caja_absoluta(opciones.caja, vista_de_pagina(writer, indice))
-                _asegurar_contenido(writer, indice)
-                clave = (round(x2 - x1, 2), round(y2 - y1, 2))
-                if clave not in sellos:
-                    sellos[clave] = TextStamp(
-                        writer,
-                        estilo_para(*clave),
-                        text_params={"ts": fecha},
-                        box=BoxConstraints(width=clave[0], height=clave[1]),
-                    )
-                sellos[clave].apply(indice, x1, y1)
 
         campo = _nombre_campo_libre(writer, opciones.nombre_campo)
         caja_campo = caja_absoluta(opciones.caja, vista_de_pagina(writer, pagina_firma))
         fields.append_signature_field(
-            writer, fields.SigFieldSpec(sig_field_name=campo, on_page=pagina_firma, box=caja_campo)
+            writer,
+            fields.SigFieldSpec(
+                sig_field_name=campo,
+                on_page=pagina_firma,
+                box=caja_campo,
+                # Campo y widget separados: el campo luego recibe más widgets.
+                combine_annotation=not varios_widgets,
+            ),
         )
 
         meta = signers.PdfSignatureMetadata(
@@ -678,7 +747,14 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
         estilo_campo = estilo_para(caja_campo[2] - caja_campo[0], caja_campo[3] - caja_campo[1])
         pdf_signer = signers.PdfSigner(meta, signer=signer, stamp_style=estilo_campo)
         buffer = io.BytesIO()
-        pdf_signer.sign_pdf(writer, output=buffer)
+        if varios_widgets:
+
+            def agregar_widgets(sesion):
+                _agregar_widgets(writer, sesion, campo, paginas, pagina_firma, opciones.caja, estilo_para)
+
+            asyncio.run(_firmar_con_paso_previo(pdf_signer, writer, buffer, agregar_widgets))
+        else:
+            pdf_signer.sign_pdf(writer, output=buffer)
 
     Path(salida).write_bytes(buffer.getvalue())
     return ResultadoFirma(

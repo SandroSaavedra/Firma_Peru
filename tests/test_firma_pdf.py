@@ -32,6 +32,23 @@ def _rect_del_campo(reader, indice):
     return None
 
 
+def _widgets_de_firma(reader, indice):
+    """(widget, campo) de cada widget de firma de la página; el campo es el propio widget o su /Parent."""
+    resultado = []
+    for ref in _pagina(reader, indice).get("/Annots", []):
+        anot = ref.get_object()
+        if anot.get("/Subtype") != "/Widget":
+            continue
+        campo = anot if "/T" in anot else anot["/Parent"]
+        if campo.get("/FT") == "/Sig":
+            resultado.append((anot, campo))
+    return resultado
+
+
+def _ap_normal(widget):
+    return widget["/AP"].raw_get("/N")
+
+
 # --- Conversión de caja relativa a absoluta --------------------------------
 
 
@@ -58,7 +75,7 @@ def test_caja_fuera_de_rango_se_rechaza():
 # --- Firma completa -------------------------------------------------------
 
 
-def test_todas_sella_cada_pagina_y_una_sola_firma_pades(tmp_path, pdf_multipagina, firmante):
+def test_todas_sella_cada_pagina_y_una_sola_firma_pades(tmp_path, pdf_multipagina, firmante, material_prueba):
     salida = tmp_path / "salida.pdf"
     caja = CajaRelativa(x=0.1, y=0.1, ancho=0.3, alto=0.08)
     resultado = firmar_pdf(
@@ -71,11 +88,50 @@ def test_todas_sella_cada_pagina_y_una_sola_firma_pades(tmp_path, pdf_multipagin
     firmas = reader.embedded_signatures
     assert len(firmas) == 1
     assert firmas[0].sig_object["/SubFilter"] == "/ETSI.CAdES.detached"
-    # páginas 0 y 1 (esta última sin /Contents originalmente) llevan sello de contenido
-    assert _tiene_sello_de_contenido(reader, 0)
-    assert _tiene_sello_de_contenido(reader, 1)
-    # la última página lleva el campo de firma en la posición relativa
-    assert _rect_del_campo(reader, 2) == pytest.approx(caja_absoluta(caja, A4), abs=0.01)
+    estado = validate_pdf_signature(firmas[0], ValidationContext(trust_roots=[material_prueba[1]]))
+    assert estado.intact and estado.valid
+
+    # Cada página lleva exactamente un widget del ÚNICO campo firmado (clic = estado de la firma).
+    campo_firmado = firmas[0].sig_field
+    vistas = [A4, CARTA_HORIZONTAL, A4]
+    apariencias = []
+    for indice, vista in enumerate(vistas):
+        (widget, campo), = _widgets_de_firma(reader, indice)
+        assert campo["/T"] == resultado.campo
+        assert campo.raw_get("/V").reference == campo_firmado.raw_get("/V").reference
+        assert widget.raw_get("/P").reference == reader.find_page_for_modification(indice)[0].reference
+        assert int(widget["/F"]) & 4  # imprimible
+        assert tuple(float(v) for v in widget["/Rect"]) == pytest.approx(caja_absoluta(caja, vista), abs=0.01)
+        apariencias.append(_ap_normal(widget))
+        # el sello ya no se dibuja como contenido de la página
+        assert not _tiene_sello_de_contenido(reader, indice)
+    assert len(campo_firmado["/Kids"]) == 3
+    # páginas del mismo tamaño comparten el mismo XObject de apariencia
+    assert apariencias[0].reference == apariencias[2].reference
+    assert apariencias[1].reference != apariencias[0].reference
+
+
+def test_todas_segunda_firma_mantiene_valida_la_primera(tmp_path, pdf_multipagina, firmante, material_prueba):
+    primera = tmp_path / "primera.pdf"
+    segunda = tmp_path / "segunda.pdf"
+    firmar_pdf(pdf_multipagina, primera, firmante, "PRUEBA", OpcionesFirma(paginas="todas"))
+    resultado = firmar_pdf(
+        primera, segunda, firmante, "PRUEBA", OpcionesFirma(paginas="todas", tipo="visto_bueno")
+    )
+
+    assert resultado.modo == "solo_campo"
+    reader = _leer(segunda)
+    firmas = reader.embedded_signatures
+    assert len(firmas) == 2
+    contexto = ValidationContext(trust_roots=[material_prueba[1]])
+    for firma in firmas:
+        estado = validate_pdf_signature(firma, contexto)
+        assert estado.intact and estado.valid
+        assert estado.docmdp_ok
+        assert estado.modification_level <= ModificationLevel.FORM_FILLING
+    # la segunda firma solo agrega su propio widget en la página de firma
+    assert len(_widgets_de_firma(reader, 0)) == 1
+    assert len(_widgets_de_firma(reader, 2)) == 2
 
 
 def test_ultima_solo_pone_el_campo_de_firma(tmp_path, pdf_multipagina, firmante):
@@ -100,8 +156,9 @@ def test_campo_en_otra_pagina_usa_su_tamano(tmp_path, pdf_multipagina, firmante)
     assert resultado.pagina_firma == 1
     reader = _leer(salida)
     assert _rect_del_campo(reader, 1) == pytest.approx(caja_absoluta(caja, CARTA_HORIZONTAL), abs=0.01)
-    assert _tiene_sello_de_contenido(reader, 0)
-    assert _tiene_sello_de_contenido(reader, 2)
+    assert _rect_del_campo(reader, 0) == pytest.approx(caja_absoluta(caja, A4), abs=0.01)
+    assert _rect_del_campo(reader, 2) == pytest.approx(caja_absoluta(caja, A4), abs=0.01)
+    assert not _tiene_sello_de_contenido(reader, 0)
 
 
 def test_plantilla_invalida_se_rechaza(tmp_path, pdf_multipagina, firmante):
