@@ -24,6 +24,7 @@ User request (2026-11-18): the stamp must have a fixed, standard size and a cont
 - [x] T1 Fixed stamp size, no resizing, no «Quitar logo», closed reason list + tests (route: delegated writer, trigger: 2+ non-trivial files: firma_pdf.py, app.py, ui/app.js, ui/index.html, tests).
 
 - [x] T2 Logo cannot be changed: always the bundled initial logo (`src/Emblema peruano con firma digital.png`); remove «Cambiar logo…» and its API; a custom logo saved by older versions is ignored (route: delegated writer, trigger: 2+ non-trivial files: app.py, ui/app.js, ui/index.html, tests, README).
+- [x] T3 Ship the logo inside the executable/installer: `firmador.spec` datas includes `src/Emblema peruano con firma digital.png`; `ruta_logo_inicial()` resolves it from `ruta_recursos()` (_MEIPASS when frozen). RED: 2 failing tests (`test_logo_inicial_se_busca_en_los_recursos_empaquetados`, `test_el_ejecutable_empaqueta_el_logo_inicial`); GREEN: `python -m pytest -q` 151 passed; `build.ps1` exit 0 and the logo is at `dist/FirmaPeru/_internal/src/` (route: inline, 1 behavior file + spec + test + README).
 
 ## Acceptance criteria
 - A «Firma» signature on A4 and on a non-A4 page produces a widget rect of 160 x 40 pt.

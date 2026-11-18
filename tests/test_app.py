@@ -473,11 +473,20 @@ def test_sin_logo_inicial_no_hay_logo(api, tmp_path, monkeypatch):
     assert api.obtener_config()["logo"] is None
 
 
-def test_logo_inicial_se_busca_junto_al_ejecutable(monkeypatch, tmp_path):
+def test_logo_inicial_se_busca_en_los_recursos_empaquetados(monkeypatch, tmp_path):
+    # Empaquetado con PyInstaller, el logo va dentro del ejecutable (_MEIPASS),
+    # no junto al .exe: el instalador no copia la carpeta src/.
+    recursos = tmp_path / "_internal"
     monkeypatch.setattr(app.sys, "frozen", True, raising=False)
-    monkeypatch.setattr(app.sys, "executable", str(tmp_path / "FirmadorDNIe.exe"))
+    monkeypatch.setattr(app.sys, "executable", str(tmp_path / "FirmaPeru.exe"))
+    monkeypatch.setattr(app.sys, "_MEIPASS", str(recursos), raising=False)
     monkeypatch.setattr(app, "LOGO_INICIAL", LOGO_INICIAL_ORIGINAL)
-    assert app.ruta_logo_inicial() == tmp_path.resolve() / "src" / "Emblema peruano con firma digital.png"
+    assert app.ruta_logo_inicial() == recursos / "src" / "Emblema peruano con firma digital.png"
+
+
+def test_el_ejecutable_empaqueta_el_logo_inicial():
+    spec = (Path(app.__file__).parent / "firmador.spec").read_text(encoding="utf-8")
+    assert '"src/Emblema peruano con firma digital.png", "src"' in spec
 
 
 def test_logo_inicial_predeterminado_es_el_emblema_peruano():

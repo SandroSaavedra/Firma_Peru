@@ -60,9 +60,8 @@ TAM_MAXIMO_PDF = 200 * 1024 * 1024  # límite de un PDF recibido como bytes desd
 VIDA_SUBIDA = 120  # segundos sin actividad tras los cuales se descarta una subida
 TAM_MAXIMO_LOGO = 20 * 1024 * 1024  # imagen (logo o visto bueno) que se acepta
 LADO_MAXIMO_LOGO = 800  # px: la copia guardada se reduce para no inflar los PDF
-# Imágenes que el usuario deja junto al programa (no se distribuyen con la
-# aplicación).
 # Logo del sello «Firma»: siempre este archivo; no se puede cambiar ni quitar.
+# Se empaqueta dentro del ejecutable (ver firmador.spec y `ruta_logo_inicial`).
 LOGO_INICIAL = Path("src") / "Emblema peruano con firma digital.png"
 NOMBRE_LOGO = "logo.png"  # copia reducida de LOGO_INICIAL en la carpeta de configuración
 # Imagen de visto bueno inicial: se copia a la configuración la primera vez.
@@ -277,12 +276,14 @@ def ruta_imagen_inicial(clave: str) -> Path:
 
 
 def ruta_logo_inicial() -> Path:
-    return carpeta_aplicacion() / LOGO_INICIAL
+    # Va dentro del ejecutable (ver firmador.spec): el logo es obligatorio y el
+    # instalador no copia la carpeta src/.
+    return ruta_recursos() / LOGO_INICIAL
 
 
 def preparar_logo() -> Path | None:
     """
-    Logo del sello «Firma»: siempre LOGO_INICIAL, junto al programa; no se
+    Logo del sello «Firma»: siempre LOGO_INICIAL, incluido en el programa; no se
     puede cambiar ni quitar. Se guarda su copia reducida (`imagen_reducida`)
     en la carpeta de configuración como NOMBRE_LOGO, encima de cualquier logo
     elegido con versiones anteriores (que ya no se usa). Devuelve la ruta que

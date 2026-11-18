@@ -3,15 +3,16 @@
 # Construir con:  python -m PyInstaller --noconfirm --clean firmador.spec
 from PyInstaller.utils.hooks import collect_submodules
 
-datas = [("ui", "ui"), ("assets", "assets")]
+# The Firma stamp logo is mandatory, so it ships inside the executable.
+datas = [("ui", "ui"), ("assets", "assets"), ("src/Emblema peruano con firma digital.png", "src")]
 # Executable, window and installer icon (generated from src/peru.png).
 ICONO = "assets/firma-peru.ico"
 
 # pyHanko y su validador cargan algunos módulos de forma diferida. fontTools
 # importa cada tabla de la fuente por nombre (ttLib.tables.*) y uharfbuzz es
 # una extensión compilada: ambos se usan para incrustar Arial en el sello.
-# La fuente se lee de C:\Windows\Fonts en tiempo de ejecución. El logo del
-# usuario (src/) NO se empaqueta: se busca junto al .exe.
+# La fuente se lee de C:\Windows\Fonts en tiempo de ejecución. Del resto de
+# src/ solo se empaqueta el logo; la imagen de visto bueno se busca junto al .exe.
 hiddenimports = (
     collect_submodules("pyhanko.sign")
     + collect_submodules("pyhanko.stamp")

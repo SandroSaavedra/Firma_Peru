@@ -87,8 +87,9 @@ certificado es de confianza según los certificados raíz de Windows.
 - El motivo se elige de la lista del tipo y también queda registrado en la firma
   digital (campo *Reason*). El lugar, si se indica, solo se registra en la firma.
 - El texto usa Arial incrustada en el PDF; si Arial no está disponible, Helvetica.
-- **Logo**: siempre es `src\Emblema peruano con firma digital.png`, junto al
-  programa (o junto a `FirmaPeru.exe`); no se puede cambiar ni quitar. El panel
+- **Logo**: siempre es `src\Emblema peruano con firma digital.png`; el
+  ejecutable y el instalador lo llevan incluido (`firmador.spec`), así que no
+  hace falta copiarlo junto a `FirmaPeru.exe`. No se puede cambiar ni quitar. El panel
   lo muestra solo como referencia. Se usa una copia reducida que se guarda en
   `%APPDATA%\FirmadorDNIe` (junto con `config.json`, que recuerda el último
   tipo usado). Un logo elegido con versiones anteriores se ignora. Si el
