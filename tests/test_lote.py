@@ -424,12 +424,9 @@ def test_ajuste_por_documento_solo_se_aplica_a_ese(api, cng, tmp_path):
     assert r["ok"] and len(r["firmados"]) == 3
 
     def rect(caja):
-        return (
-            round(caja["x"] * 595, 2),
-            round(caja["y"] * 842, 2),
-            round((caja["x"] + caja["ancho"]) * 595, 2),
-            round((caja["y"] + caja["alto"]) * 842, 2),
-        )
+        # Solo se usa la posición: el sello «Firma» mide siempre 160 x 40 pt.
+        x, y = round(caja["x"] * 595, 2), round(caja["y"] * 842, 2)
+        return x, y, round(x + 160, 2), round(y + 40, 2)
 
     salidas = [f["salida"] for f in r["firmados"]]
     assert _campo_de_firma(salidas[0]) == (2, rect(CAJA))

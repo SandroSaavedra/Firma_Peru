@@ -32,7 +32,7 @@ import argparse
 import sys
 
 from dnie_cng import ErrorCNG, FirmanteCNG, elegir_llave_de_firma, listar_llaves
-from firma_pdf import ErrorFirma, OpcionesFirma, caja_predeterminada, firmar_pdf
+from firma_pdf import ErrorFirma, OpcionesFirma, firmar_pdf
 
 TIPOS_CLI = {"firma": "firma", "vb": "visto_bueno"}
 
@@ -50,8 +50,8 @@ def listar_certificados():
 def firmar(filtro_cert, entrada, salida, tipo="firma", motivo=None, logo=None, imagen_vb=None):
     llave = elegir_llave_de_firma(filtro_cert)
     print(f"Certificado: {llave.titular}")
-    # Caja predeterminada del tipo, abajo a la derecha (en A4: 260 x 75 o 120 x 85 pt).
-    opciones = OpcionesFirma(caja=caja_predeterminada(tipo), tipo=tipo, motivo=motivo, logo=logo, imagen_vb=imagen_vb)
+    # Posición predeterminada del tipo, abajo a la derecha; tamaño fijo (160 x 40 o 140 x 110 pt).
+    opciones = OpcionesFirma(tipo=tipo, motivo=motivo, logo=logo, imagen_vb=imagen_vb)
     resultado = firmar_pdf(entrada, salida, FirmanteCNG(llave), llave.titular, opciones)
     if resultado.modo == "solo_campo":
         print(f"El PDF ya tenía {resultado.firmas_previas} firma(s): el sello va solo en el campo de firma.")

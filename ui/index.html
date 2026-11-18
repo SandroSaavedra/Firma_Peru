@@ -138,7 +138,7 @@
           <div class="hoja" id="hoja" hidden>
             <canvas id="lienzo" aria-label="Vista de la página"></canvas>
             <div class="sello" id="sello" tabindex="0" role="group"
-                 aria-label="Sello de firma. Arrastre para mover; use las flechas para moverlo y Alt con las flechas para cambiar su tamaño."
+                 aria-label="Sello de firma de tamaño fijo. Arrastre o use las flechas para moverlo."
                  aria-roledescription="sello movible">
               <div class="sello-contenido" id="sello-contenido" aria-hidden="true">
                 <svg class="sello-marca" viewBox="0 0 100 100"><use href="#marca-vb"/></svg>
@@ -146,11 +146,7 @@
                 <img class="sello-icono" id="sello-icono" alt="" hidden>
                 <div class="sello-texto" id="sello-texto"><div class="sello-lineas" id="sello-lineas"></div></div>
               </div>
-              <span class="tirador" data-esquina="nw" aria-hidden="true"></span>
-              <span class="tirador" data-esquina="ne" aria-hidden="true"></span>
-              <span class="tirador" data-esquina="sw" aria-hidden="true"></span>
-              <span class="tirador" data-esquina="se" aria-hidden="true"></span>
-              <span class="sello-etiqueta" id="sello-etiqueta"></span>
+              <span class="sello-etiqueta"><span id="sello-etiqueta"></span><span class="sello-medidas" id="sello-medidas"></span></span>
             </div>
           </div>
         </div>
@@ -187,7 +183,7 @@
         </fieldset>
 
         <div class="campo" id="campo-logo">
-          <span class="etiqueta">Logo <span class="opcional">(opcional)</span></span>
+          <span class="etiqueta">Logo</span>
           <div class="logo-fila">
             <div class="logo-vista" id="logo-vista">
               <img id="logo-img" alt="Vista previa del logo" hidden>
@@ -197,7 +193,6 @@
               <button class="btn btn-secundario btn-chico" id="btn-logo" type="button">
                 <svg class="ic"><use href="#i-imagen"/></svg><span id="btn-logo-texto">Elegir logo…</span>
               </button>
-              <button class="enlace enlace-peligro" id="btn-quitar-logo" type="button" hidden>Quitar logo</button>
             </div>
           </div>
           <p class="ayuda">PNG o JPG. Se guarda una copia en su equipo; puede mover o borrar el original.</p>
@@ -221,8 +216,8 @@
         </div>
 
         <div class="campo">
-          <label class="etiqueta" for="txt-motivo">Motivo</label>
-          <input id="txt-motivo" type="text" autocomplete="off" maxlength="120">
+          <label class="etiqueta" for="sel-motivo">Motivo</label>
+          <select id="sel-motivo"></select>
           <p class="ayuda">Aparece en el sello y queda registrado en la firma.</p>
         </div>
 
@@ -246,7 +241,7 @@
             <label><input type="radio" name="pagina-firma" value="ultima" checked><span>Última página</span></label>
             <label><input type="radio" name="pagina-firma" value="actual"><span id="lbl-pagina-actual">Página actual</span></label>
           </div>
-          <p class="ayuda" id="txt-campo-ayuda">Arrastre el sello sobre la página para ubicarlo y sus esquinas para cambiar el tamaño. La posición se aplica igual en todas las páginas.</p>
+          <p class="ayuda" id="txt-campo-ayuda">Arrastre el sello sobre la página para ubicarlo; su tamaño es fijo. La posición se aplica igual en todas las páginas.</p>
           <label class="interruptor interruptor-propio" id="campo-posicion-propia" hidden>
             <input type="checkbox" id="chk-posicion-propia">
             <span class="interruptor-pista" aria-hidden="true"></span>

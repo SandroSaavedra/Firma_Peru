@@ -27,8 +27,8 @@ python app.py
 ```
 
 1. Abra un PDF (botón **Agregar PDFs**, `Ctrl+O` o arrastrándolo a la ventana).
-2. Elija el **Tipo de firma** (**Firma** o **Visto bueno**) y, si quiere, cambie el motivo.
-3. Arrastre el sello a la posición deseada y ajuste su tamaño con las esquinas.
+2. Elija el **Tipo de firma** (**Firma** o **Visto bueno**) y, si quiere, elija otro motivo de la lista.
+3. Arrastre el sello a la posición deseada (o muévalo con las flechas). Su tamaño es fijo.
 4. Elija si el sello va en todas las páginas o solo en la página de la firma.
 5. Pulse **Firmar documento** (`Ctrl+Enter`) y escriba el PIN en la ventana de Windows.
 
@@ -51,7 +51,7 @@ lo quita de la lista y deja la ventana lista para otro. Las opciones de firma se
    visible en» y la posición del sello valen para **todos**. El campo de firma va
    en la última página de cada documento.
 3. Para un documento distinto, active **Posición propia para este documento**:
-   lo que mueva o redimensione en él se aplica solo a ese. **Página actual** también
+   lo que mueva en él se aplica solo a ese. **Página actual** también
    se aplica solo al documento a la vista (y se limita a sus páginas).
 4. Pulse **Firmar N documentos**. Se firman uno tras otro con una sola apertura
    de la llave del DNIe, para que Windows pueda pedir el PIN una sola vez (si la
@@ -76,32 +76,35 @@ certificado es de confianza según los certificados raíz de Windows.
 
 ### Tipos de sello
 
-| Tipo | Aspecto | Motivo predeterminado | Fecha |
-| --- | --- | --- | --- |
-| **Firma** | Logo a la izquierda, datos a la derecha | Soy el autor del documento | `2026/10/27 10:38:55-0500` |
-| **Visto bueno** | Imagen de visto bueno arriba, datos debajo (sin superponerse) | Doy V° B° | `27.10.2026 10:25:52 -05:00` |
+| Tipo | Tamaño | Aspecto | Motivos | Fecha |
+| --- | --- | --- | --- | --- |
+| **Firma** | 160 × 40 pt | Logo a la izquierda, datos a la derecha | Soy el autor del documento (predeterminado), En señal de conformidad | `2026/10/27 10:38:55-0500` |
+| **Visto bueno** | 140 × 110 pt | Imagen de visto bueno arriba, datos debajo (sin superponerse) | Doy V° B° | `27.10.2026 10:25:52 -05:00` |
 
-- El motivo también queda registrado en la firma digital (campo *Reason*). El
-  lugar, si se indica, solo se registra en la firma.
+- El sello mide lo mismo en cualquier tamaño de página y no se puede
+  redimensionar; solo se mueve. Si en la posición elegida no cabe, se desplaza
+  hasta quedar dentro de la página.
+- El motivo se elige de la lista del tipo y también queda registrado en la firma
+  digital (campo *Reason*). El lugar, si se indica, solo se registra en la firma.
 - El texto usa Arial incrustada en el PDF; si Arial no está disponible, Helvetica.
-- **Logo**: elíjalo con **Elegir logo…** (PNG o JPG). Se guarda una copia en
-  `%APPDATA%\FirmadorDNIe` (junto con `config.json`, que recuerda el último tipo
-  usado), así que puede mover o borrar el original. Sin logo, el texto ocupa
-  todo el sello.
+- **Logo**: cámbielo con **Cambiar logo…** (PNG o JPG); no se puede quitar. Se
+  guarda una copia en `%APPDATA%\FirmadorDNIe` (junto con `config.json`, que
+  recuerda el último tipo usado), así que puede mover o borrar el original. Solo
+  si no hay ningún logo (ni el inicial) el texto ocupa todo el sello.
 - **Imagen de visto bueno**: elíjala con **Elegir imagen…** (solo con
   **Visto bueno**). Se guarda una copia en la misma carpeta; el fondo blanco se
   vuelve transparente. Sin imagen se dibuja una marca de verificación propia.
 - **Imágenes iniciales**: si junto al programa (o junto a `FirmaPeru.exe`)
   existen `src\Emblema peruano con firma digital.png` (logo) o
   `src\Icono circular con marca roja.png` (visto bueno), se copian la primera
-  vez. Si luego las quita con **Quitar logo** o **Quitar imagen**, no se vuelven
-  a copiar. Estos archivos son suyos: no se incluyen en el ejecutable; cópielos
-  junto a él si los necesita.
+  vez. Si quita la imagen de visto bueno con **Quitar imagen**, no se vuelve a
+  copiar. El logo, en cambio, se repone al iniciar si no hay ninguno guardado
+  (por ejemplo, si se quitó con versiones anteriores). Estos archivos son suyos:
+  no se incluyen en el ejecutable; cópielos junto a él si los necesita.
 - **Actualización del logo inicial**: las versiones anteriores usaban
   `src\firma_digital_vivienda.png`. Si el logo guardado sigue siendo la copia
   sin cambios de ese archivo (y este sigue junto al programa), al iniciar se
-  reemplaza por el emblema nuevo. Un logo elegido por usted o quitado con
-  **Quitar logo** no se toca.
+  reemplaza por el emblema nuevo. Un logo elegido por usted no se toca.
 
 ### PDF que ya tienen firmas
 
@@ -127,7 +130,7 @@ python firma1.py entrada.pdf salida.pdf --tipo vb --imagen-vb check.png
 ```
 
 `--tipo` es `firma` (predeterminado) o `vb`; `--motivo` reemplaza el motivo
-predeterminado del tipo; `--imagen-vb` es la imagen de arriba del visto bueno
+predeterminado del tipo (aquí admite cualquier texto, no solo los de la lista); `--imagen-vb` es la imagen de arriba del visto bueno
 (sin ella, la marca de verificación propia).
 
 ## Pruebas

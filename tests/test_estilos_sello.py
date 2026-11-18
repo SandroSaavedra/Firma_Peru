@@ -90,6 +90,15 @@ def test_motivos_predeterminados():
     }
 
 
+def test_motivos_por_tipo_empiezan_por_el_predeterminado():
+    assert firma_pdf.MOTIVOS_POR_TIPO == {
+        "firma": ("Soy el autor del documento", "En señal de conformidad"),
+        "visto_bueno": ("Doy V° B°",),
+    }
+    for tipo, motivos in firma_pdf.MOTIVOS_POR_TIPO.items():
+        assert motivos[0] == firma_pdf.MOTIVOS_PREDETERMINADOS[tipo]
+
+
 # --- Firma con cada tipo -----------------------------------------------------
 
 

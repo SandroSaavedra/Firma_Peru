@@ -297,7 +297,11 @@ def _color_de_esquina(ruta: Path):
 def test_config_predeterminada(api):
     c = api.obtener_config()
     assert c["ok"] and c["tipo"] == "firma" and c["logo"] is None
-    assert c["motivos"] == {"firma": "Soy el autor del documento", "visto_bueno": "Doy V° B°"}
+    # Lista cerrada de motivos por tipo; el primero es el predeterminado.
+    assert c["motivos"] == {
+        "firma": ["Soy el autor del documento", "En señal de conformidad"],
+        "visto_bueno": ["Doy V° B°"],
+    }
 
 
 def test_logo_y_tipo_persisten_en_appdata(api, appdata, tmp_path):
@@ -317,9 +321,10 @@ def test_logo_y_tipo_persisten_en_appdata(api, appdata, tmp_path):
     assert c["tipo"] == "visto_bueno"
     assert c["logo"] is not None and c["logo"]["datos"].startswith("data:image/png;base64,")
 
-    assert otra.quitar_logo()["ok"]
-    assert not copia.exists()
-    assert app.Api().obtener_config()["logo"] is None
+
+def test_el_logo_se_puede_cambiar_pero_no_quitar():
+    assert not hasattr(app.Api, "quitar_logo")
+    assert hasattr(app.Api, "elegir_logo") and hasattr(app.Api, "quitar_imagen_vb")
 
 
 def test_logo_grande_se_reduce(api, appdata, tmp_path):
@@ -364,14 +369,28 @@ def test_logo_inicial_se_copia_una_sola_vez(api, appdata, tmp_path, monkeypatch)
     assert (appdata / "FirmadorDNIe" / "logo.png").is_file()
     assert inicial.read_bytes() == original  # el archivo del usuario no se toca
 
-    # Quitar el logo se respeta: no se vuelve a copiar al reiniciar.
-    assert api.quitar_logo()["ok"]
-    assert app.Api().obtener_config()["logo"] is None
-
-    # Elegir otro logo después sigue funcionando.
-    api._asignar_ventana(VentanaFalsa([str(_imagen(tmp_path / "otro.png", "PNG"))]))
+    # Un logo elegido después no se reemplaza por el inicial al reiniciar.
+    api._asignar_ventana(VentanaFalsa([str(_imagen(tmp_path / "otro.png", "PNG", color=(10, 150, 10)))]))
     assert api.elegir_logo()["ok"]
+    guardado = (appdata / "FirmadorDNIe" / "logo.png").read_bytes()
     assert app.Api().obtener_config()["logo"] is not None
+    assert (appdata / "FirmadorDNIe" / "logo.png").read_bytes() == guardado
+
+
+def _logo_quitado_en_version_anterior():
+    """Configuración que dejaba «Quitar logo» (opción que ya no existe)."""
+    (app.carpeta_config() / "logo.png").unlink(missing_ok=True)
+    app.guardar_config({**app.leer_config(), "logo": None, "logo_inicial_aplicado": True})
+
+
+def test_logo_quitado_antes_se_restaura_al_iniciar(api, appdata, tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "LOGO_INICIAL", _imagen(tmp_path / "inicial.png", "PNG", (437, 259)))
+    assert api.obtener_config()["logo"] is not None
+    _logo_quitado_en_version_anterior()
+
+    assert app.Api().obtener_config()["logo"] is not None
+    assert (appdata / "FirmadorDNIe" / "logo.png").is_file()
+    assert app.leer_config()["logo"] == "logo.png"
 
 
 def test_sin_logo_inicial_no_hay_logo(api, tmp_path, monkeypatch):
@@ -450,15 +469,15 @@ def test_logo_elegido_por_el_usuario_no_se_reemplaza(api, appdata, logos_inicial
     assert guardado.read_bytes() == propio
 
 
-def test_logo_quitado_no_vuelve_tras_actualizar(api, appdata, logos_iniciales, monkeypatch):
+def test_logo_quitado_vuelve_con_el_logo_inicial_actual(api, appdata, logos_iniciales, monkeypatch):
     anterior, nuevo = logos_iniciales
     _instalacion_anterior(api, monkeypatch, anterior, nuevo)
-    assert api.quitar_logo()["ok"]
+    _logo_quitado_en_version_anterior()
 
-    assert api.obtener_config()["logo"] is None
-    assert not (appdata / "FirmadorDNIe" / "logo.png").exists()
+    assert api.obtener_config()["logo"] is not None
+    assert _color_de_esquina(appdata / "FirmadorDNIe" / "logo.png") == (30, 60, 200)  # el emblema nuevo
     config = app.leer_config()
-    assert config["logo"] is None and config["logo_inicial_aplicado"] is True
+    assert config["logo"] == "logo.png" and config["logo_inicial_aplicado"] is True
 
 
 def test_sin_logo_anterior_junto_al_programa_no_se_toca(api, appdata, logos_iniciales, monkeypatch):
@@ -567,3 +586,38 @@ def test_la_ventana_usa_el_icono_de_la_aplicacion(monkeypatch):
     monkeypatch.setattr(app.sys, "argv", ["app.py"])
     app.main()
     assert recibido["icon"] == str(app.RUTA_ICONO)
+
+
+def _rect_y_motivo(ruta, indice=2):
+    with open(ruta, "rb") as f:
+        reader = PdfFileReader(f, strict=False)
+        pagina = reader.find_page_for_modification(indice)[0].get_object()
+        anot = next(a.get_object() for a in pagina["/Annots"])
+        return tuple(float(v) for v in anot["/Rect"]), reader.embedded_signatures[0].sig_object["/Reason"]
+
+
+def test_firmar_ignora_el_tamano_que_envia_la_interfaz(api, pdf_multipagina):
+    api.abrir_ruta(str(pdf_multipagina))
+    caja = {"x": 0.1, "y": 0.1, "ancho": 0.5, "alto": 0.3}  # tamaño antiguo o manipulado
+    r = api.firmar({"paginas": "ultima", "tipo": "firma", "caja": caja})
+    assert r["ok"], r
+    rect, _ = _rect_y_motivo(r["salida"])
+    assert rect == pytest.approx((59.5, 84.2, 219.5, 124.2), abs=0.01)  # 160 x 40 pt en A4
+
+
+@pytest.mark.parametrize(
+    "tipo, motivo, esperado",
+    [
+        ("firma", "En señal de conformidad", "En señal de conformidad"),
+        ("firma", "Soy el autor del documento", "Soy el autor del documento"),
+        ("firma", "Texto libre", "Soy el autor del documento"),
+        ("firma", "Doy V° B°", "Soy el autor del documento"),
+        ("visto_bueno", "En señal de conformidad", "Doy V° B°"),
+        ("visto_bueno", None, "Doy V° B°"),
+    ],
+)
+def test_firmar_solo_acepta_motivos_de_la_lista(api, pdf_multipagina, tipo, motivo, esperado):
+    api.abrir_ruta(str(pdf_multipagina))
+    r = api.firmar({"paginas": "ultima", "tipo": tipo, "motivo": motivo})
+    assert r["ok"], r
+    assert _rect_y_motivo(r["salida"])[1] == esperado

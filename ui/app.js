@@ -1,6 +1,7 @@
 // Firmador DNIe — lógica de la interfaz.
-// Convención de la caja del sello (igual que firma_pdf.py): fracciones 0..1 de
-// `page.view` (CropBox ∩ MediaBox), origen abajo-izquierda, espacio PDF sin rotar.
+// Convención del sello (igual que firma_pdf.py): su posición (esquina inferior
+// izquierda) va en fracciones 0..1 de `page.view` (CropBox ∩ MediaBox), origen
+// abajo-izquierda, espacio PDF sin rotar; su tamaño es fijo por tipo, en pt.
 // La conversión pantalla <-> PDF se hace con el viewport de pdf.js, que ya
 // considera la rotación de la página.
 
@@ -9,30 +10,36 @@ import * as pdfjsLib from "./vendor/pdfjs/pdf.min.mjs";
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("./vendor/pdfjs/pdf.worker.min.mjs", import.meta.url).href;
 const RUTA_PDFJS = new URL("./vendor/pdfjs/", import.meta.url).href;
 
-// Tipos de sello: mismas plantillas, tamaños máximos de letra (pt) y cajas en
-// A4 que firma_pdf.py (PLANTILLAS_SELLO, _TAM_MAXIMO, CAJAS_POR_TIPO).
+// Tipos de sello: mismas plantillas, tamaños máximos de letra (pt), tamaños
+// fijos (pt) y posiciones predeterminadas (abajo a la derecha en A4) que
+// firma_pdf.py (PLANTILLAS_SELLO, _TAM_MAXIMO, TAMANOS_SELLO, POSICIONES_PREDETERMINADAS).
 const TIPOS = {
   firma: {
     plantilla: "Firmado digitalmente por:\n{firmante}\nMotivo: {motivo}\nFecha: {fecha}",
     tamMaximo: 9,
-    caja: { x: 300 / 595, y: 30 / 842, ancho: 260 / 595, alto: 75 / 842 },
+    tamano: { ancho: 160, alto: 40 },
+    posicion: { x: 400 / 595, y: 30 / 842 },
     ayuda: "Su logo a la izquierda y los datos de la firma a la derecha.",
   },
   visto_bueno: {
     plantilla: "Firmado digitalmente por\n{firmante}\nMotivo: {motivo}\nFecha: {fecha}",
     tamMaximo: 8,
-    caja: { x: 420 / 595, y: 30 / 842, ancho: 140 / 595, alto: 110 / 842 },
+    tamano: { ancho: 140, alto: 110 },
+    posicion: { x: 420 / 595, y: 30 / 842 },
     ayuda: "Imagen de visto bueno arriba y los datos de la firma debajo, sin superponerse.",
   },
 };
-const MOTIVOS_INICIALES = { firma: "Soy el autor del documento", visto_bueno: "Doy V° B°" };
+// Motivos de cada tipo (lista cerrada; el primero es el predeterminado), como
+// firma_pdf.MOTIVOS_POR_TIPO. Python envía los mismos en obtener_config.
+const MOTIVOS_INICIALES = {
+  firma: ["Soy el autor del documento", "En señal de conformidad"],
+  visto_bueno: ["Doy V° B°"],
+};
 const PROPORCION_LOGO = 0.38;
 const PROPORCION_IMAGEN_VB = 0.55; // parte superior del visto bueno reservada a la imagen
 const TAM_MINIMO = 3; // pt
-const CAJA_INICIAL = TIPOS.firma.caja;
+const ANCHO_A4 = 595; // pt
 const PASOS_ZOOM = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
-const MIN_ANCHO = 36;
-const MIN_ALTO = 16;
 const MARGEN_VISOR = 56;
 const ESPERA_RUTA_SOLTAR = 1200; // ms que se espera la ruta de Python antes de leer el archivo en JS
 const TAM_SUBIDA = 512 * 1024; // bytes por fragmento al enviar un PDF arrastrado a Python
@@ -56,7 +63,7 @@ const el = {
   cargador: $("cargador"), cargadorTexto: $("cargador-texto"), cargadorProgreso: $("cargador-progreso"),
   cargadorBarra: $("cargador-barra"),
   sello: $("sello"), selloContenido: $("sello-contenido"), selloMarca: document.querySelector(".sello-marca"),
-  selloLogo: $("sello-logo"), selloIcono: $("sello-icono"), selloTexto: $("sello-texto"), selloLineas: $("sello-lineas"), selloEtiqueta: $("sello-etiqueta"),
+  selloLogo: $("sello-logo"), selloIcono: $("sello-icono"), selloTexto: $("sello-texto"), selloLineas: $("sello-lineas"), selloEtiqueta: $("sello-etiqueta"), selloMedidas: $("sello-medidas"),
   btnAnt: $("btn-pag-ant"), btnSig: $("btn-pag-sig"), inpPagina: $("inp-pagina"), totalPaginas: $("total-paginas"),
   btnMenos: $("btn-zoom-menos"), btnMas: $("btn-zoom-mas"), btnAjustar: $("btn-ajustar"), btnPagina: $("btn-pagina"), zoomValor: $("zoom-valor"),
   tarjeta: $("tarjeta-dnie"), dnieEstado: $("dnie-estado"), dnieTitular: $("dnie-titular"), dnieDetalle: $("dnie-detalle"),
@@ -65,7 +72,7 @@ const el = {
   lblPaginaActual: $("lbl-pagina-actual"),
   txtTipoAyuda: $("txt-tipo-ayuda"), campoLogo: $("campo-logo"),
   campoImagenVb: $("campo-imagen-vb"),
-  txtMotivo: $("txt-motivo"), txtLugar: $("txt-lugar"),
+  selMotivo: $("sel-motivo"), txtLugar: $("txt-lugar"),
   chkGuardarComo: $("chk-guardar-como"), txtDestino: $("txt-destino"),
   btnFirmar: $("btn-firmar"),
   btnValidarAbierto: $("btn-validar-abierto"), btnValidarOtro: $("btn-validar-otro"),
@@ -81,7 +88,7 @@ const estado = {
   pagina: 1,
   total: 0,
   zoom: { ajuste: "pagina", escala: 1 }, // ajuste: "pagina" | "ancho" | null
-  caja: { ...CAJA_INICIAL },
+  caja: { ...TIPOS.firma.posicion }, // posición común { x, y } (la clave «caja» se mantiene por compatibilidad)
   tipo: "firma",       // "firma" | "visto_bueno"
   motivos: { ...MOTIVOS_INICIALES },
   imagenes: { logo: null, imagen_vb: null }, // { nombre, datos (data URL) } o null
@@ -97,7 +104,7 @@ const estado = {
   // a la vista tiene sus bytes en JS (se cargan al elegirlo).
   cola: [],            // [{ id, nombre, ruta, paginas, firmas, docmdp, valido, estado, mensaje, salida }]
   actualId: null,      // id del documento a la vista
-  ajustes: {},         // id -> { caja?: caja propia, pagina?: índice 0.. del campo («Página actual») }
+  ajustes: {},         // id -> { caja?: posición propia { x, y }, pagina?: índice 0.. del campo («Página actual») }
   lote: null,          // avance de la firma por lotes { total, indice, hechos, nombre, cancelando }
   carga: 0,            // descarta cargas de documentos que quedaron viejas
   sinArrastrar: false,
@@ -659,7 +666,7 @@ function limpiarAjuste() {
   if (a && a.caja == null && a.pagina == null) delete estado.ajustes[estado.actualId];
 }
 
-// La caja que se ve y se firma: la propia del documento o la común a todos.
+// La posición que se ve y se firma: la propia del documento o la común a todos.
 function cajaVisible() {
   const a = ajusteActual();
   return (a && a.caja) || estado.caja;
@@ -684,9 +691,9 @@ function actualizarAjustesVisibles() {
   el.campoPosicionPropia.hidden = !varios;
   el.chkPosicionPropia.disabled = estado.firmando;
   el.txtCampoAyuda.textContent = varios
-    ? "Arrastre el sello para ubicarlo y sus esquinas para cambiar el tamaño. La posición vale para todos los documentos, " +
+    ? "Arrastre el sello para ubicarlo; su tamaño es fijo. La posición vale para todos los documentos, " +
       "salvo los que tengan posición propia. El campo de firma va en la última página de cada documento; «Página actual» solo se aplica a este."
-    : "Arrastre el sello sobre la página para ubicarlo y sus esquinas para cambiar el tamaño. La posición se aplica igual en todas las páginas.";
+    : "Arrastre el sello sobre la página para ubicarlo; su tamaño es fijo. La posición se aplica igual en todas las páginas.";
 }
 
 function ajustesParaPython() {
@@ -930,12 +937,20 @@ function actualizarMarcas() {
 
 // ---------------------------------------------------------------- sello
 
-function cajaAPixeles(vp, view, caja = cajaVisible()) {
+// Igual que firma_pdf.rect_sello: posición relativa y tamaño fijo del tipo en pt;
+// si no cabe, se desplaza hasta quedar dentro de la página.
+function rectPdf(view, caja = cajaVisible(), tipo = estado.tipo) {
   const [x0, y0, x1, y1] = view;
-  const w = x1 - x0;
-  const hh = y1 - y0;
-  const a = vp.convertToViewportPoint(x0 + caja.x * w, y0 + caja.y * hh);
-  const b = vp.convertToViewportPoint(x0 + (caja.x + caja.ancho) * w, y0 + (caja.y + caja.alto) * hh);
+  const { ancho, alto } = TIPOS[tipo].tamano;
+  const x = Math.max(x0, Math.min(x0 + caja.x * (x1 - x0), x1 - ancho));
+  const y = Math.max(y0, Math.min(y0 + caja.y * (y1 - y0), y1 - alto));
+  return [x, y, x + ancho, y + alto];
+}
+
+function cajaAPixeles(vp, view, caja = cajaVisible()) {
+  const [x1, y1, x2, y2] = rectPdf(view, caja);
+  const a = vp.convertToViewportPoint(x1, y1);
+  const b = vp.convertToViewportPoint(x2, y2);
   return {
     left: Math.min(a[0], b[0]),
     top: Math.min(a[1], b[1]),
@@ -944,17 +959,25 @@ function cajaAPixeles(vp, view, caja = cajaVisible()) {
   };
 }
 
+// Posición { x, y } (esquina inferior izquierda) del rectángulo en píxeles; el tamaño no se guarda.
 function pixelesACaja(r, vp = estado.viewport, view = estado.vistaPdf) {
   const [x0, y0, x1, y1] = view;
-  const w = x1 - x0;
-  const hh = y1 - y0;
   const a = vp.convertToPdfPoint(r.left, r.top);
   const b = vp.convertToPdfPoint(r.left + r.width, r.top + r.height);
-  const px1 = limitar((Math.min(a[0], b[0]) - x0) / w, 0, 1);
-  const py1 = limitar((Math.min(a[1], b[1]) - y0) / hh, 0, 1);
-  const px2 = limitar((Math.max(a[0], b[0]) - x0) / w, 0, 1);
-  const py2 = limitar((Math.max(a[1], b[1]) - y0) / hh, 0, 1);
-  return { x: px1, y: py1, ancho: Math.max(px2 - px1, 0.001), alto: Math.max(py2 - py1, 0.001) };
+  return {
+    x: limitar((Math.min(a[0], b[0]) - x0) / (x1 - x0), 0, 1),
+    y: limitar((Math.min(a[1], b[1]) - y0) / (y1 - y0), 0, 1),
+  };
+}
+
+// Posición guardada (preferencia «caja» o posición propia) sin el tamaño de
+// versiones anteriores: de una caja antigua { x, y, ancho, alto } se conserva
+// su esquina inferior derecha (referida a A4) y el sello toma el tamaño fijo.
+function posicionGuardada(c, tipo = estado.tipo) {
+  const numero = (v) => typeof v === "number" && Number.isFinite(v);
+  if (!c || !numero(c.x) || !numero(c.y)) return { ...TIPOS[tipo].posicion };
+  const x = numero(c.ancho) ? c.x + c.ancho - TIPOS[tipo].tamano.ancho / ANCHO_A4 : c.x;
+  return { x: limitar(x, 0, 1), y: limitar(c.y, 0, 1) };
 }
 
 function rectSello() {
@@ -971,24 +994,23 @@ function aplicarRect(r) {
   el.sello.style.top = `${r.top}px`;
   el.sello.style.width = `${r.width}px`;
   el.sello.style.height = `${r.height}px`;
+  actualizarMedidasSello();
   ajustarTextoSello();
+}
+
+// Ancho x alto del sello en puntos PDF: el tamaño fijo del tipo.
+function actualizarMedidasSello() {
+  const { ancho, alto } = TIPOS[estado.tipo].tamano;
+  el.selloMedidas.textContent = `${ancho} × ${alto} pt`;
 }
 
 function posicionarSello() {
   if (!estado.viewport) return;
-  const r = cajaAPixeles(estado.viewport, estado.vistaPdf);
-  const W = estado.viewport.width;
-  const H = estado.viewport.height;
-  // Mantener dentro de la página aun si la caja guardada no cabe.
-  r.width = limitar(r.width, Math.min(MIN_ANCHO, W), W);
-  r.height = limitar(r.height, Math.min(MIN_ALTO, H), H);
-  r.left = limitar(r.left, 0, W - r.width);
-  r.top = limitar(r.top, 0, H - r.height);
-  aplicarRect(r);
+  aplicarRect(cajaAPixeles(estado.viewport, estado.vistaPdf));
 }
 
-// Mover o redimensionar el sello cambia la caja común a todos los documentos,
-// o solo la de este si tiene «Posición propia».
+// Mover el sello cambia la posición común a todos los documentos, o solo la de
+// este si tiene «Posición propia».
 function confirmarCaja() {
   const caja = pixelesACaja(rectSello());
   const a = ajusteActual();
@@ -1007,30 +1029,11 @@ function mover(r, dx, dy) {
   return { ...r, left: limitar(r.left + dx, 0, W - r.width), top: limitar(r.top + dy, 0, H - r.height) };
 }
 
-function redimensionar(r, esquina, dx, dy) {
-  const W = estado.viewport.width;
-  const H = estado.viewport.height;
-  let { left, top, width, height } = r;
-  if (esquina.includes("e")) width = limitar(width + dx, MIN_ANCHO, W - left);
-  if (esquina.includes("s")) height = limitar(height + dy, MIN_ALTO, H - top);
-  if (esquina.includes("w")) {
-    const nuevo = limitar(left + dx, 0, left + width - MIN_ANCHO);
-    width += left - nuevo;
-    left = nuevo;
-  }
-  if (esquina.includes("n")) {
-    const nuevo = limitar(top + dy, 0, top + height - MIN_ALTO);
-    height += top - nuevo;
-    top = nuevo;
-  }
-  return { left, top, width, height };
-}
-
 function iniciarArrastreSello() {
   let arrastre = null;
   el.sello.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || !estado.viewport) return;
-    arrastre = { esquina: e.target.dataset.esquina || null, x: e.clientX, y: e.clientY, r: rectSello() };
+    arrastre = { x: e.clientX, y: e.clientY, r: rectSello() };
     el.sello.setPointerCapture(e.pointerId);
     el.sello.classList.add("activo");
     el.sello.focus({ preventScroll: true });
@@ -1040,7 +1043,7 @@ function iniciarArrastreSello() {
     if (!arrastre) return;
     const dx = e.clientX - arrastre.x;
     const dy = e.clientY - arrastre.y;
-    aplicarRect(arrastre.esquina ? redimensionar(arrastre.r, arrastre.esquina, dx, dy) : mover(arrastre.r, dx, dy));
+    aplicarRect(mover(arrastre.r, dx, dy));
   });
   const terminar = () => {
     if (!arrastre) return;
@@ -1057,8 +1060,7 @@ function iniciarArrastreSello() {
     e.preventDefault();
     e.stopPropagation();
     const paso = e.shiftKey ? 10 : 2;
-    const r = rectSello();
-    aplicarRect(e.altKey ? redimensionar(r, "se", d[0] * paso, d[1] * paso) : mover(r, d[0] * paso, d[1] * paso));
+    aplicarRect(mover(rectSello(), d[0] * paso, d[1] * paso));
     confirmarCaja();
   });
 }
@@ -1094,7 +1096,7 @@ function fechaSello(tipo, d = new Date()) {
 }
 
 function motivoActual() {
-  return el.txtMotivo.value.trim() || estado.motivos[estado.tipo];
+  return el.selMotivo.value || estado.motivos[estado.tipo][0];
 }
 
 function textoSello() {
@@ -1195,37 +1197,35 @@ function actualizarVistaPrevia() {
 
 // ---------------------------------------------------------------- tipo de sello y logo
 
-function cajaAjustadaAlTipo(c, tipo) {
-  // Tamaño predeterminado del tipo, manteniendo la esquina inferior derecha actual.
-  const d = TIPOS[tipo].caja;
-  return {
-    x: limitar(c.x + c.ancho - d.ancho, 0, 1 - d.ancho),
-    y: limitar(c.y, 0, 1 - d.alto),
-    ancho: d.ancho,
-    alto: d.alto,
-  };
+// Al cambiar de tipo el sello cambia de tamaño: se mantiene su esquina inferior
+// derecha (referida a la página a la vista, o a A4 si no hay documento).
+function posicionAjustadaAlTipo(c, anterior, tipo) {
+  const view = estado.vistaPdf || [0, 0, ANCHO_A4, 842];
+  const diferencia = (TIPOS[anterior].tamano.ancho - TIPOS[tipo].tamano.ancho) / (view[2] - view[0]);
+  return { x: limitar(c.x + diferencia, 0, 1), y: c.y };
 }
 
-function cajaDelTipo(tipo) {
-  estado.caja = cajaAjustadaAlTipo(estado.caja, tipo);
-  for (const a of Object.values(estado.ajustes)) if (a.caja) a.caja = cajaAjustadaAlTipo(a.caja, tipo);
+function cajaDelTipo(anterior, tipo) {
+  estado.caja = posicionAjustadaAlTipo(estado.caja, anterior, tipo);
+  for (const a of Object.values(estado.ajustes)) if (a.caja) a.caja = posicionAjustadaAlTipo(a.caja, anterior, tipo);
   guardarPreferencia("caja", estado.caja);
-  posicionarSello();
-  actualizarMarcas();
 }
 
 function aplicarTipo(tipo, { cambiarCaja = false, guardar = false } = {}) {
   if (!TIPOS[tipo]) tipo = "firma";
+  const anterior = estado.tipo;
   estado.tipo = tipo;
   for (const radio of document.querySelectorAll('input[name="tipo"]')) radio.checked = radio.value === tipo;
   el.sello.dataset.tipo = tipo;
   el.campoLogo.hidden = tipo !== "firma";
   el.campoImagenVb.hidden = tipo !== "visto_bueno";
   el.txtTipoAyuda.textContent = TIPOS[tipo].ayuda;
-  // El motivo vuelve al predeterminado del tipo; la edición del usuario se mantiene hasta cambiar de tipo.
-  el.txtMotivo.value = estado.motivos[tipo];
-  el.txtMotivo.placeholder = estado.motivos[tipo];
-  if (cambiarCaja) cajaDelTipo(tipo);
+  // Se ofrecen los motivos del tipo y se elige el predeterminado (el primero).
+  el.selMotivo.replaceChildren(...estado.motivos[tipo].map((motivo) => h("option", { value: motivo }, motivo)));
+  el.selMotivo.value = estado.motivos[tipo][0];
+  if (cambiarCaja && anterior !== tipo) cajaDelTipo(anterior, tipo);
+  posicionarSello(); // el sello toma el tamaño fijo del tipo
+  actualizarMarcas();
   if (estado.info) actualizarDestino(); // el nombre sugerido cambia con el tipo (_firmado / _vb)
   if (guardar) {
     llamar("guardar_tipo", tipo).then((r) => {
@@ -1235,14 +1235,15 @@ function aplicarTipo(tipo, { cambiarCaja = false, guardar = false } = {}) {
   actualizarVistaPrevia();
 }
 
-// Selectores de imagen: logo («Firma») e imagen de arriba («Visto bueno»).
+// Selectores de imagen: logo («Firma»; se puede cambiar pero no quitar) e
+// imagen de arriba («Visto bueno»; `quitar` es su botón «Quitar imagen»).
 const SELECTORES = {
   logo: {
     prefijo: "logo", sello: "sello-logo", api: "logo", nombre: "logo",
     elegir: "Elegir logo…", cambiar: "Cambiar logo…", guardado: "Logo guardado. Se usará en sus próximas firmas.",
   },
   imagen_vb: {
-    prefijo: "imagen-vb", sello: "sello-icono", api: "imagen_vb", nombre: "imagen",
+    prefijo: "imagen-vb", sello: "sello-icono", api: "imagen_vb", nombre: "imagen", quitar: "btn-quitar-imagen-vb",
     elegir: "Elegir imagen…", cambiar: "Cambiar imagen…",
     guardado: "Imagen guardada. Se usará en sus próximos vistos buenos.",
   },
@@ -1257,7 +1258,7 @@ function mostrarImagen(clave, imagen) {
   vista.hidden = !hay;
   $(`${c.prefijo}-vacio`).toggleAttribute("hidden", hay);
   $(`${c.prefijo}-vista`).classList.toggle("con-logo", hay);
-  $(`btn-quitar-${c.prefijo}`).hidden = !hay;
+  if (c.quitar) $(c.quitar).hidden = !hay;
   $(`btn-${c.prefijo}-texto`).textContent = hay ? c.cambiar : c.elegir;
   if (hay) {
     vista.src = imagen.datos;
@@ -1272,9 +1273,14 @@ function mostrarImagen(clave, imagen) {
 async function cargarConfig() {
   const r = await llamar("obtener_config");
   if (!r.ok) return;
-  if (r.motivos) estado.motivos = { ...MOTIVOS_INICIALES, ...r.motivos };
-  const sinCajaGuardada = leerPreferencia("caja", null) === null;
-  aplicarTipo(r.tipo, { cambiarCaja: sinCajaGuardada && r.tipo !== estado.tipo });
+  for (const tipo of Object.keys(MOTIVOS_INICIALES)) {
+    const lista = r.motivos && r.motivos[tipo];
+    if (Array.isArray(lista) && lista.length) estado.motivos[tipo] = lista;
+  }
+  // Una caja guardada por versiones anteriores se convierte con el tamaño del tipo guardado.
+  const guardada = leerPreferencia("caja", null);
+  if (guardada !== null) estado.caja = posicionGuardada(guardada, TIPOS[r.tipo] ? r.tipo : "firma");
+  aplicarTipo(r.tipo, { cambiarCaja: guardada === null && r.tipo !== estado.tipo });
   mostrarImagen("logo", r.logo);
   mostrarImagen("imagen_vb", r.imagen_vb);
 }
@@ -1947,7 +1953,7 @@ window.firmador = {
 
 function escribiendo(e) {
   const t = e.target;
-  return t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement;
+  return t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement;
 }
 
 function atajos(e) {
@@ -2005,7 +2011,7 @@ function atajos(e) {
 
 function iniciar() {
   iniciarTema();
-  estado.caja = { ...CAJA_INICIAL, ...leerPreferencia("caja", {}) };
+  estado.caja = posicionGuardada(leerPreferencia("caja", null), "firma");
   el.txtLugar.value = leerPreferencia("lugar", "");
   aplicarTipo("firma");
   el.chkGuardarComo.checked = Boolean(leerPreferencia("guardarComo", false));
@@ -2077,11 +2083,11 @@ function iniciar() {
       if (radio.checked) aplicarTipo(radio.value, { cambiarCaja: true, guardar: true });
     });
   }
-  el.txtMotivo.addEventListener("input", actualizarVistaPrevia);
+  el.selMotivo.addEventListener("change", actualizarVistaPrevia);
   el.txtLugar.addEventListener("input", () => guardarPreferencia("lugar", el.txtLugar.value));
   for (const [clave, c] of Object.entries(SELECTORES)) {
     $(`btn-${c.prefijo}`).addEventListener("click", () => elegirImagen(clave));
-    $(`btn-quitar-${c.prefijo}`).addEventListener("click", () => quitarImagen(clave));
+    if (c.quitar) $(c.quitar).addEventListener("click", () => quitarImagen(clave));
     $(c.sello).addEventListener("load", ajustarTextoSello);
   }
   el.chkGuardarComo.addEventListener("change", () => {

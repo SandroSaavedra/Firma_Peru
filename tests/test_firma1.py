@@ -4,7 +4,7 @@ from pyhanko.pdf_utils.reader import PdfFileReader
 import firma1
 
 
-def test_cli_firma_con_caja_predeterminada(monkeypatch, tmp_path, pdf_multipagina, firmante, capsys):
+def test_cli_firma_con_posicion_predeterminada(monkeypatch, tmp_path, pdf_multipagina, firmante, capsys):
     monkeypatch.setattr(firma1, "elegir_llave_de_firma", lambda filtro: firmante._llave)
     salida = tmp_path / "salida.pdf"
     monkeypatch.setattr("sys.argv", ["firma1.py", str(pdf_multipagina), str(salida)])
@@ -13,9 +13,14 @@ def test_cli_firma_con_caja_predeterminada(monkeypatch, tmp_path, pdf_multipagin
 
     assert "3 de 3 páginas selladas" in capsys.readouterr().out
     with open(salida, "rb") as f:
-        firmas = PdfFileReader(f, strict=False).embedded_signatures
+        reader = PdfFileReader(f, strict=False)
+        firmas = reader.embedded_signatures
         assert len(firmas) == 1
         assert firmas[0].sig_object["/Reason"] == "Soy el autor del documento"
+        # Abajo a la derecha en A4 y con el tamaño fijo de «Firma» (160 x 40 pt).
+        pagina = reader.find_page_for_modification(2)[0].get_object()
+        anot = next(a.get_object() for a in pagina["/Annots"])
+        assert tuple(round(float(v), 2) for v in anot["/Rect"]) == (400, 30, 560, 70)
 
 
 def test_cli_visto_bueno_con_motivo(monkeypatch, tmp_path, pdf_multipagina, firmante):

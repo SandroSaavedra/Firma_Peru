@@ -341,14 +341,8 @@ kbd { font: 600 11px var(--fuente); background: var(--superficie); border: 1px s
   pointer-events: none; opacity: 0; transition: opacity .12s;
 }
 .sello:hover .sello-etiqueta, .sello.activo .sello-etiqueta, .sello:focus-visible .sello-etiqueta { opacity: 1; }
-.tirador {
-  position: absolute; width: 11px; height: 11px; background: var(--superficie); border: 2px solid var(--sello-borde);
-  border-radius: 50%;
-}
-.tirador[data-esquina="nw"] { left: -6px; top: -6px; cursor: nwse-resize; }
-.tirador[data-esquina="ne"] { right: -6px; top: -6px; cursor: nesw-resize; }
-.tirador[data-esquina="sw"] { left: -6px; bottom: -6px; cursor: nesw-resize; }
-.tirador[data-esquina="se"] { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.sello-medidas { font-weight: 400; font-variant-numeric: tabular-nums; }
+.sello-medidas:not(:empty)::before { content: " · "; }
 
 /* Estado vacío */
 .vacio { display: grid; place-items: center; min-height: 100%; }
@@ -384,13 +378,14 @@ kbd { font: 600 11px var(--fuente); background: var(--superficie); border: 1px s
 .ayuda { margin: 7px 0 0; font-size: 12px; color: var(--texto-3); }
 .ayuda code { font-size: 11px; white-space: nowrap; }
 .campo-doble { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.panel input[type="text"], .panel textarea {
+.panel input[type="text"], .panel select, .panel textarea {
   width: 100%; border: 1px solid var(--borde-fuerte); border-radius: var(--radio-s); background: var(--superficie);
   padding: 8px 10px;
 }
-.panel input[type="text"] { height: 36px; }
+.panel input[type="text"], .panel select { height: 36px; }
+.panel select { padding-block: 0; cursor: pointer; }
 .panel textarea { resize: vertical; min-height: 72px; font-family: var(--fuente-mono); font-size: 12.5px; line-height: 1.4; }
-.panel input[type="text"]:focus, .panel textarea:focus { border-color: var(--acento); box-shadow: var(--foco); outline: none; }
+.panel input[type="text"]:focus, .panel select:focus, .panel textarea:focus { border-color: var(--acento); box-shadow: var(--foco); outline: none; }
 .panel input::placeholder { color: var(--texto-3); }
 
 .segmentado { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; background: var(--superficie-3); border-radius: 9px; }

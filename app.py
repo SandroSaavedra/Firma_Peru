@@ -40,11 +40,11 @@ import webview
 
 from dnie_cng import ErrorCNG, FirmanteCNG, SesionFirma, elegir_llave_de_firma
 from firma_pdf import (
-    MOTIVOS_PREDETERMINADOS,
+    MOTIVOS_POR_TIPO,
     TIPOS_SELLO,
-    CajaRelativa,
     ErrorFirma,
     OpcionesFirma,
+    PosicionRelativa,
     analizar_pdf,
     firmar_pdf,
     fondo_blanco_a_transparente,
@@ -286,8 +286,9 @@ def actualizar_logo_inicial_anterior():
     Las versiones anteriores copiaban LOGO_INICIAL_ANTERIOR como logo. Si la
     copia guardada sigue siendo exactamente esa (mismos píxeles que produciría
     `copiar_imagen`), se reemplaza por LOGO_INICIAL. Un logo elegido por el
-    usuario o quitado con «Quitar logo» no se toca, y tampoco si el archivo
-    anterior ya no está junto al programa (no hay con qué comparar).
+    usuario no se toca, y tampoco si el archivo anterior ya no está junto al
+    programa (no hay con qué comparar). Si no hay logo guardado, lo repone
+    `preparar_imagenes_iniciales`.
     """
     guardado = ruta_imagen_guardada("logo")
     anterior = carpeta_aplicacion() / LOGO_INICIAL_ANTERIOR
@@ -306,15 +307,22 @@ def actualizar_logo_inicial_anterior():
 
 def preparar_imagenes_iniciales():
     """
-    Para el logo y la imagen de visto bueno: si aún no se aplicó y el archivo
-    de `src/` existe junto al programa, se copia a la configuración (el original
-    no se toca). Se hace una sola vez: si el usuario quita o cambia la imagen,
-    se respeta. Antes, el logo inicial anterior sin cambios se actualiza.
+    Copia a la configuración la imagen inicial de `src/` (si existe junto al
+    programa; el original no se toca):
+      - Logo: siempre que no haya un logo guardado. El logo se puede cambiar
+        pero no quitar, así que uno quitado con versiones anteriores (que
+        tenían «Quitar logo») vuelve a ser el inicial.
+      - Imagen de visto bueno: una sola vez; si el usuario la quita o la
+        cambia, se respeta.
+    Antes, el logo inicial anterior sin cambios se actualiza.
     """
     actualizar_logo_inicial_anterior()
     for clave, (_, _, bandera) in IMAGENES.items():
         config = leer_config()
-        if config[bandera] or config[clave]:
+        if clave == "logo":
+            if ruta_imagen_guardada(clave) is not None:
+                continue
+        elif config[bandera] or config[clave]:
             continue
         origen = ruta_imagen_inicial(clave)
         if not origen.is_file():
@@ -416,6 +424,16 @@ def copiar_imagen(origen: Path, clave: str = "logo") -> Path:
 
 def copiar_logo(origen: Path) -> Path:
     return copiar_imagen(origen, "logo")
+
+
+def motivo_permitido(tipo: str, motivo) -> str | None:
+    """
+    El motivo, si es uno de la lista cerrada del tipo (MOTIVOS_POR_TIPO); si
+    no, None, es decir, el predeterminado del tipo. Solo la interfaz se limita
+    a la lista: `firmar_pdf` y la CLI aceptan cualquier motivo.
+    """
+    motivo = motivo.strip() if isinstance(motivo, str) else ""
+    return motivo if motivo in MOTIVOS_POR_TIPO.get(tipo, ()) else None
 
 
 class Api:
@@ -874,7 +892,7 @@ class Api:
     # --- tipo de sello, logo y configuración ------------------------------------
 
     def obtener_config(self) -> dict:
-        """Último tipo de sello, imágenes guardadas (vista previa) y motivos predeterminados."""
+        """Último tipo de sello, imágenes guardadas (vista previa) y motivos de cada tipo (el primero, el predeterminado)."""
         preparar_imagenes_iniciales()
         config = leer_config()
         return {
@@ -882,7 +900,7 @@ class Api:
             "tipo": config["tipo"],
             "logo": _imagen_para_interfaz(ruta_imagen_guardada("logo"), "logo"),
             "imagen_vb": _imagen_para_interfaz(ruta_imagen_guardada("imagen_vb")),
-            "motivos": dict(MOTIVOS_PREDETERMINADOS),
+            "motivos": {tipo: list(motivos) for tipo, motivos in MOTIVOS_POR_TIPO.items()},
         }
 
     def guardar_tipo(self, tipo: str) -> dict:
@@ -916,6 +934,7 @@ class Api:
         return {"ok": True, clave: _imagen_para_interfaz(destino, clave)}
 
     def _quitar_imagen(self, clave: str) -> dict:
+        """Solo para la imagen de visto bueno: el logo se puede cambiar pero no quitar."""
         try:
             ruta = ruta_imagen_guardada(clave)
             if ruta is not None:
@@ -929,9 +948,6 @@ class Api:
 
     def elegir_logo(self) -> dict:
         return self._elegir_imagen("logo")
-
-    def quitar_logo(self) -> dict:
-        return self._quitar_imagen("logo")
 
     def elegir_imagen_vb(self) -> dict:
         return self._elegir_imagen("imagen_vb")
@@ -999,19 +1015,20 @@ class Api:
 
     @staticmethod
     def _opciones_firma(opciones: dict, caja: dict | None, pagina_firma: int) -> OpcionesFirma:
-        """Opciones comunes de la interfaz (tipo, motivo, lugar, páginas) más la caja y la página del campo."""
+        """
+        Opciones comunes de la interfaz (tipo, motivo, lugar, páginas) más la
+        caja y la página del campo. De la caja solo se usa la posición (x, y):
+        el tamaño del sello es fijo por tipo y se ignoran «ancho» y «alto». El
+        motivo debe ser uno de la lista del tipo; si no, se usa el predeterminado.
+        """
         tipo = opciones.get("tipo") or leer_config()["tipo"]
         return OpcionesFirma(
-            caja=CajaRelativa(
-                x=float(caja["x"]), y=float(caja["y"]), ancho=float(caja["ancho"]), alto=float(caja["alto"])
-            )
-            if caja
-            else OpcionesFirma().caja,
+            posicion=PosicionRelativa(x=float(caja["x"]), y=float(caja["y"])) if caja else None,
             paginas=opciones.get("paginas", "todas"),
             pagina_firma=pagina_firma,
             tipo=tipo,
             texto_sello=opciones.get("texto_sello") or None,
-            motivo=(opciones.get("motivo") or "").strip() or None,
+            motivo=motivo_permitido(tipo, opciones.get("motivo")),
             lugar=(opciones.get("lugar") or "").strip() or None,
             logo=ruta_imagen_guardada("logo") if tipo == "firma" else None,
             imagen_vb=ruta_imagen_guardada("imagen_vb") if tipo == "visto_bueno" else None,

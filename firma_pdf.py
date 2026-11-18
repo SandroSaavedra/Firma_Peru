@@ -7,10 +7,14 @@ widget por página (/Kids), todos con el mismo sello: el sello de cada página
 es parte de la firma y al hacer clic en él el lector muestra su estado.
 
 Convención de coordenadas (la interfaz debe usar la misma):
-  - La caja del sello se expresa en FRACCIONES (0..1) de la "vista" de la
-    página: la intersección de /CropBox y /MediaBox (lo mismo que `page.view`
-    en pdf.js). Origen abajo a la izquierda, espacio PDF SIN ROTAR.
-  - En páginas con /Rotate distinto de 0 la caja se ubica en el lugar correcto
+  - La posición del sello (su esquina inferior izquierda) se expresa en
+    FRACCIONES (0..1) de la "vista" de la página: la intersección de /CropBox
+    y /MediaBox (lo mismo que `page.view` en pdf.js). Origen abajo a la
+    izquierda, espacio PDF SIN ROTAR.
+  - El tamaño del sello es fijo por tipo y en puntos PDF (TAMANOS_SELLO): mide
+    lo mismo en cualquier tamaño de página. Si en la posición pedida no cabe,
+    se desplaza hasta quedar dentro de la página.
+  - En páginas con /Rotate distinto de 0 el sello se ubica en el lugar correcto
     (si la interfaz convierte con `viewport.convertToPdfPoint`), pero el texto
     del sello se dibuja con la orientación del espacio sin rotar, es decir,
     girado junto con la página.
@@ -35,7 +39,7 @@ import asyncio
 import io
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -62,7 +66,17 @@ logging.getLogger("fontTools.subset").setLevel(logging.ERROR)
 
 TipoSello = Literal["firma", "visto_bueno"]
 TIPOS_SELLO: tuple[str, ...] = ("firma", "visto_bueno")
-MOTIVOS_PREDETERMINADOS = {"firma": "Soy el autor del documento", "visto_bueno": "Doy V° B°"}
+# Motivos que ofrece la interfaz para cada tipo (lista cerrada); el primero es
+# el predeterminado. `firmar_pdf` y la CLI aceptan cualquier motivo.
+MOTIVOS_POR_TIPO = {
+    "firma": ("Soy el autor del documento", "En señal de conformidad"),
+    "visto_bueno": ("Doy V° B°",),
+}
+MOTIVOS_PREDETERMINADOS = {tipo: motivos[0] for tipo, motivos in MOTIVOS_POR_TIPO.items()}
+# Tamaño fijo de cada sello en puntos PDF, igual en cualquier tamaño de página
+# (la interfaz usa los mismos): «Firma» 160 x 40 y «Visto bueno» 140 x 110
+# (imagen arriba y 4-5 líneas de texto debajo, legibles a unos 8 pt).
+TAMANOS_SELLO = {"firma": (160, 40), "visto_bueno": (140, 110)}
 PLANTILLAS_SELLO = {
     "firma": "Firmado digitalmente por:\n%(firmante)s\nMotivo: %(motivo)s\nFecha: %(ts)s",
     "visto_bueno": "Firmado digitalmente por\n%(firmante)s\nMotivo: %(motivo)s\nFecha: %(ts)s",
@@ -110,35 +124,27 @@ class ErrorFirma(ValueError):
 
 
 @dataclass
-class CajaRelativa:
-    """Caja del sello en fracciones de la vista de la página (origen abajo-izq.)."""
+class PosicionRelativa:
+    """Esquina inferior izquierda del sello en fracciones de la vista de la página (origen abajo-izq.)."""
 
     x: float
     y: float
-    ancho: float
-    alto: float
 
 
-# Equivale a la caja fija antigua de firma1.py (400, 30, 560, 75) en A4.
-CAJA_PREDETERMINADA = CajaRelativa(x=400 / 595, y=30 / 842, ancho=160 / 595, alto=45 / 842)
-
-
-# Caja predeterminada de cada tipo en A4 (la interfaz usa las mismas):
-# «Firma» ancha (260 x 75 pt) y «Visto bueno» más alta (140 x 110 pt: icono
-# arriba y 4-5 líneas de texto debajo, legibles a unos 8 pt).
-CAJAS_POR_TIPO = {
-    "firma": CajaRelativa(x=300 / 595, y=30 / 842, ancho=260 / 595, alto=75 / 842),
-    "visto_bueno": CajaRelativa(x=420 / 595, y=30 / 842, ancho=140 / 595, alto=110 / 842),
+# Posición predeterminada de cada tipo, abajo a la derecha: en A4, borde derecho
+# a 560 pt y borde inferior a 30 pt (la interfaz usa las mismas).
+POSICIONES_PREDETERMINADAS = {
+    tipo: PosicionRelativa(x=(560 - ancho) / 595, y=30 / 842) for tipo, (ancho, _) in TAMANOS_SELLO.items()
 }
 
 
-def caja_predeterminada(tipo: str) -> CajaRelativa:
-    return CajaRelativa(**vars(CAJAS_POR_TIPO.get(tipo, CAJAS_POR_TIPO["firma"])))
+def posicion_predeterminada(tipo: str) -> PosicionRelativa:
+    return PosicionRelativa(**vars(POSICIONES_PREDETERMINADAS.get(tipo, POSICIONES_PREDETERMINADAS["firma"])))
 
 
 @dataclass
 class OpcionesFirma:
-    caja: CajaRelativa = field(default_factory=lambda: CajaRelativa(**vars(CAJA_PREDETERMINADA)))
+    posicion: PosicionRelativa | None = None  # None = posición predeterminada del tipo
     paginas: str = "todas"  # "todas" | "ultima"
     pagina_firma: int = -1  # página con el campo de firma real (negativo = desde el final)
     tipo: TipoSello = "firma"
@@ -170,25 +176,21 @@ class InfoPdf:
     rotaciones: list[int]
 
 
-def caja_absoluta(caja: CajaRelativa, vista) -> tuple[float, float, float, float]:
-    """Convierte la caja relativa a (x1, y1, x2, y2) en puntos PDF de la vista dada."""
-    valores = (caja.x, caja.y, caja.ancho, caja.alto)
-    if (
-        any(v < -_TOLERANCIA or v > 1 + _TOLERANCIA for v in valores)
-        or caja.ancho <= 0
-        or caja.alto <= 0
-        or caja.x + caja.ancho > 1 + _TOLERANCIA
-        or caja.y + caja.alto > 1 + _TOLERANCIA
-    ):
+def rect_sello(posicion: PosicionRelativa, vista, tipo: str) -> tuple[float, float, float, float]:
+    """
+    (x1, y1, x2, y2) en puntos PDF del sello del tipo en la vista dada: la
+    esquina inferior izquierda sale de la posición relativa y el tamaño es el
+    fijo del tipo (TAMANOS_SELLO). Si en esa posición no cabe, se desplaza
+    hasta quedar dentro de la vista (en una página más chica que el sello
+    queda pegado a su esquina inferior izquierda).
+    """
+    if not all(-_TOLERANCIA <= v <= 1 + _TOLERANCIA for v in (posicion.x, posicion.y)):
         raise ErrorFirma("La posición del sello está fuera de la página.")
+    ancho, alto = TAMANOS_SELLO[tipo]
     x0, y0, x1, y1 = vista
-    ancho, alto = x1 - x0, y1 - y0
-    return (
-        x0 + caja.x * ancho,
-        y0 + caja.y * alto,
-        x0 + (caja.x + caja.ancho) * ancho,
-        y0 + (caja.y + caja.alto) * alto,
-    )
+    x = max(x0, min(x0 + posicion.x * (x1 - x0), x1 - ancho))
+    y = max(y0, min(y0 + posicion.y * (y1 - y0), y1 - alto))
+    return x, y, x + ancho, y + alto
 
 
 def _rectangulo(valor):
@@ -624,13 +626,14 @@ async def _firmar_con_paso_previo(pdf_signer, writer, salida, paso_previo):
     await firmado.post_signature_processing(salida_real)
 
 
-def _agregar_widgets(writer, sesion, campo: str, paginas, pagina_firma: int, caja: CajaRelativa, estilo_para):
+def _agregar_widgets(writer, campo: str, paginas, pagina_firma: int, posicion: PosicionRelativa, tipo: str):
     """
     Agrega al campo de firma `campo` un widget por cada página de `paginas`
-    (además del que pyHanko ya creó en `pagina_firma`). Todos muestran el mismo
-    sello con la misma hora (la de la firma) y comparten el XObject de
-    apariencia entre páginas del mismo tamaño. Clic en cualquiera = estado de
-    la firma en Acrobat (un campo con varios widgets, ISO 32000-1 § 12.7.3.1).
+    (además del que pyHanko ya creó en `pagina_firma`). El sello mide lo mismo
+    en todas las páginas, así que todos los widgets comparten el XObject de
+    apariencia del campo (mismo sello y misma hora, la de la firma). Clic en
+    cualquiera = estado de la firma en Acrobat (un campo con varios widgets,
+    ISO 32000-1 § 12.7.3.1).
     """
     ((_, _, campo_ref),) = fields.enumerate_sig_fields(writer, with_name=campo)
     campo_firma = campo_ref.get_object()
@@ -638,26 +641,13 @@ def _agregar_widgets(writer, sesion, campo: str, paginas, pagina_firma: int, caj
     widget_firma = widget_firma_ref.get_object()
     widget_firma[pdf_name("/Parent")] = campo_ref
 
-    def clave_de(rect):
-        return round(rect[2] - rect[0], 2), round(rect[3] - rect[1], 2)
-
-    rect_firma = caja_absoluta(caja, vista_de_pagina(writer, pagina_firma))
-    apariencias = {clave_de(rect_firma): widget_firma["/AP"].raw_get("/N")}
+    apariencia = widget_firma["/AP"].raw_get("/N")
     hijos = generic.ArrayObject()
     for indice in paginas:
         if indice == pagina_firma:
             hijos.append(widget_firma_ref)
             continue
-        rect = caja_absoluta(caja, vista_de_pagina(writer, indice))
-        clave = clave_de(rect)
-        if clave not in apariencias:
-            estilo = estilo_para(*clave)
-            sello = estilo.create_stamp(
-                writer,
-                BoxConstraints(width=clave[0], height=clave[1]),
-                {"ts": sesion.system_time.strftime(estilo.timestamp_format)},
-            )
-            apariencias[clave] = sello.register()
+        rect = rect_sello(posicion, vista_de_pagina(writer, indice), tipo)
         pagina_ref = writer.find_page_for_modification(indice)[0]
         widget = generic.DictionaryObject(
             {
@@ -667,7 +657,7 @@ def _agregar_widgets(writer, sesion, campo: str, paginas, pagina_firma: int, caj
                 pdf_name("/Rect"): generic.ArrayObject(generic.FloatObject(round(v, 4)) for v in rect),
                 pdf_name("/P"): pagina_ref,
                 pdf_name("/Parent"): campo_ref,
-                pdf_name("/AP"): generic.DictionaryObject({pdf_name("/N"): apariencias[clave]}),
+                pdf_name("/AP"): generic.DictionaryObject({pdf_name("/N"): apariencia}),
             }
         )
         widget_ref = writer.add_object(widget)
@@ -705,14 +695,8 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
         # El icono suele venir con fondo blanco sin alfa: se quita para que no se vea un recuadro.
         imagen = _cargar_imagen(opciones.imagen_vb, "visto bueno", fondo_transparente=True)
     fecha = fecha_sello(tipo, datetime.now().astimezone())
-
-    estilos: dict[tuple[float, float], TextStampStyle] = {}
-
-    def estilo_para(ancho: float, alto: float) -> TextStampStyle:
-        clave = (round(ancho, 2), round(alto, 2))
-        if clave not in estilos:
-            estilos[clave] = estilo_sello(tipo, clave[0], clave[1], texto, fecha, imagen)
-        return estilos[clave]
+    posicion = opciones.posicion or posicion_predeterminada(tipo)
+    estilo = estilo_sello(tipo, *TAMANOS_SELLO[tipo], texto, fecha, imagen)
 
     with open(entrada, "rb") as inf:
         writer = IncrementalPdfFileWriter(inf, strict=False)
@@ -742,7 +726,7 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
             paginas = list(range(total))
 
         campo = _nombre_campo_libre(writer, opciones.nombre_campo)
-        caja_campo = caja_absoluta(opciones.caja, vista_de_pagina(writer, pagina_firma))
+        caja_campo = rect_sello(posicion, vista_de_pagina(writer, pagina_firma), tipo)
         fields.append_signature_field(
             writer,
             fields.SigFieldSpec(
@@ -761,13 +745,12 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
             reason=motivo,
             location=lugar or None,
         )
-        estilo_campo = estilo_para(caja_campo[2] - caja_campo[0], caja_campo[3] - caja_campo[1])
-        pdf_signer = signers.PdfSigner(meta, signer=signer, stamp_style=estilo_campo)
+        pdf_signer = signers.PdfSigner(meta, signer=signer, stamp_style=estilo)
         buffer = io.BytesIO()
         if varios_widgets:
 
-            def agregar_widgets(sesion):
-                _agregar_widgets(writer, sesion, campo, paginas, pagina_firma, opciones.caja, estilo_para)
+            def agregar_widgets(_sesion):
+                _agregar_widgets(writer, campo, paginas, pagina_firma, posicion, tipo)
 
             asyncio.run(_firmar_con_paso_previo(pdf_signer, writer, buffer, agregar_widgets))
         else:
