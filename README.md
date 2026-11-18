@@ -144,5 +144,43 @@ Las pruebas no usan la tarjeta: la firma de Windows se simula.
 .\build.ps1
 ```
 
-Genera `dist\FirmaPeru\FirmaPeru.exe`. Para distribuirlo, copie la carpeta
-`dist\FirmaPeru` completa.
+Genera `dist\FirmaPeru\FirmaPeru.exe` y el instalador
+`dist\installer\FirmaPeru-Setup-1.0.0.exe`. Opciones:
+
+- `-SinPruebas`: no ejecuta las pruebas antes de construir.
+- `-Version 1.2.0`: versión del instalador (predeterminada: `1.0.0`).
+- `-SinInstalador`: solo genera la carpeta `dist\FirmaPeru`; para distribuirla,
+  copie la carpeta completa.
+
+## Instalador (sin permisos de administrador)
+
+El instalador se compila con [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+(`installer\FirmaPeru.iss`). Si no está instalado, instálelo para su usuario,
+sin permisos de administrador:
+
+```powershell
+winget install JRSoftware.InnoSetup --scope user
+```
+
+`build.ps1` busca `ISCC.exe` en la instalación por usuario
+(`%LOCALAPPDATA%\Programs\Inno Setup 6`), en `Program Files` y en el `PATH`.
+
+Qué hace el instalador:
+
+- Instala solo para el usuario actual en `%LOCALAPPDATA%\Programs\Firma Peru`.
+  No pide permisos de administrador ni muestra el aviso de Control de cuentas de usuario (UAC).
+- Crea un acceso directo en el menú Inicio y, si lo marca, otro en el escritorio.
+- No toca la configuración ni el logo guardados en `%APPDATA%\FirmadorDNIe`.
+
+Instalación silenciosa (por ejemplo, para distribuirlo con un script):
+
+```powershell
+.\FirmaPeru-Setup-1.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES
+```
+
+Para desinstalar, use **Configuración > Aplicaciones > Aplicaciones instaladas >
+Firma Perú > Desinstalar**. La configuración en `%APPDATA%\FirmadorDNIe` se conserva.
+
+El instalador no está firmado digitalmente, así que Windows SmartScreen puede
+mostrar «Windows protegió su PC». Para continuar, pulse **Más información** y
+luego **Ejecutar de todas formas**.
