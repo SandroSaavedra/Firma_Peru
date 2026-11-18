@@ -47,12 +47,14 @@ lo quita de la lista y deja la ventana lista para otro. Las opciones de firma se
    Los archivos repetidos se ignoran y los que no son PDF válidos quedan con
    **Error** (no se firman). Haga clic en uno para verlo; **×** lo quita de la
    lista y la papelera vacía la cola.
-2. Ubique el sello en cualquiera de ellos: el tipo, el motivo, el lugar, «Sello
-   visible en» y la posición del sello valen para **todos**. El campo de firma va
-   en la última página de cada documento.
-3. Para un documento distinto, active **Posición propia para este documento**:
-   lo que mueva en él se aplica solo a ese. **Página actual** también
-   se aplica solo al documento a la vista (y se limita a sus páginas).
+2. El tipo, el motivo, el lugar y «Sello visible en» valen para **todos**. El
+   campo de firma va en la última página de cada documento.
+3. La posición del sello es de cada documento: lo que mueva en uno se aplica
+   solo a ese (en la lista aparece «posición propia»). Los que no haya movido
+   usan la posición común. **Aplicar esta posición a todos** copia la posición
+   del documento a la vista a todos los de la lista y la deja como
+   predeterminada. **Página actual** también se aplica solo al documento a la
+   vista (y se limita a sus páginas).
 4. Pulse **Firmar N documentos**. Se firman uno tras otro con una sola apertura
    de la llave del DNIe, para que Windows pueda pedir el PIN una sola vez (si la
    tarjeta exige el PIN en cada firma, lo pedirá en cada documento). **Cancelar**

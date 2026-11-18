@@ -236,11 +236,8 @@
             <label><input type="radio" name="pagina-firma" value="actual"><span id="lbl-pagina-actual">Página actual</span></label>
           </div>
           <p class="ayuda" id="txt-campo-ayuda">Arrastre el sello sobre la página para ubicarlo; su tamaño es fijo. La posición se aplica igual en todas las páginas.</p>
-          <label class="interruptor interruptor-propio" id="campo-posicion-propia" hidden>
-            <input type="checkbox" id="chk-posicion-propia">
-            <span class="interruptor-pista" aria-hidden="true"></span>
-            <span>Posición propia para este documento</span>
-          </label>
+          <button class="btn btn-secundario btn-chico btn-posicion-todos" id="btn-posicion-todos" type="button" disabled
+            title="La posición del sello en este documento pasa a todos los documentos de la lista y queda como predeterminada">Aplicar esta posición a todos</button>
         </fieldset>
 
         <div class="campo">

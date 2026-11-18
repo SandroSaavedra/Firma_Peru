@@ -37,3 +37,28 @@ def test_el_logo_se_muestra_pero_no_se_puede_cambiar():
 
 def test_la_imagen_de_visto_bueno_se_puede_elegir_y_quitar():
     assert {"btn-imagen-vb", "btn-imagen-vb-texto", "btn-quitar-imagen-vb", "imagen-vb-img"} <= _ids_html()
+
+
+def test_ya_no_existe_el_interruptor_de_posicion_propia():
+    html, js = _html(), _js()
+    assert "chk-posicion-propia" not in html and "campo-posicion-propia" not in html
+    assert "Posición propia para este documento" not in html
+    assert "chkPosicionPropia" not in js and "campoPosicionPropia" not in js
+
+
+def test_boton_aplicar_posicion_a_todos_existe_y_esta_conectado():
+    html, js = _html(), _js()
+    boton = re.search(r'<button[^>]*\bid="btn-posicion-todos"[^>]*>(.*?)</button>', html, re.S)
+    assert boton, "falta el botón btn-posicion-todos"
+    assert "Aplicar esta posición a todos" in boton.group(1)
+    assert '$("btn-posicion-todos")' in js
+    assert re.search(r"el\.btnPosicionTodos\.addEventListener\(\s*\"click\"", js)
+
+
+def test_mover_el_sello_solo_cambia_la_posicion_del_documento_abierto():
+    js = _js()
+    cuerpo = re.search(r"function confirmarCaja\(\) \{(.*?)\n\}", js, re.S)
+    assert cuerpo, "falta confirmarCaja"
+    assert "estado.caja" not in cuerpo.group(1)
+    assert "guardarPreferencia" not in cuerpo.group(1)
+    assert "ajusteEditable()" in cuerpo.group(1)
