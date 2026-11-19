@@ -9,6 +9,7 @@ import ctypes
 import hashlib
 import logging
 import sys
+import time
 from ctypes import wintypes
 from dataclasses import dataclass
 
@@ -30,6 +31,7 @@ _PROP_VENTANA = "HWND Handle"  # NCRYPT_WINDOW_HANDLE_PROPERTY
 _NCRYPT_SILENT_FLAG = 0x40
 _BCRYPT_PAD_PKCS1 = 0x2
 _NTE_NO_MORE_ITEMS = 0x8009002A
+_NTE_NOT_FOUND = 0x80090011
 
 _HASH_CNG = {"sha1": "SHA1", "sha256": "SHA256", "sha384": "SHA384", "sha512": "SHA512"}
 
@@ -114,7 +116,11 @@ _crypt32.CertCloseStore.restype = wintypes.BOOL
 
 
 class ErrorCNG(RuntimeError):
-    pass
+    """Error de CNG / tarjeta. `codigo`: SECURITY_STATUS de Windows, si se conoce."""
+
+    def __init__(self, mensaje: str = "", codigo: int | None = None):
+        super().__init__(mensaje)
+        self.codigo = codigo
 
 
 def _verificar(status, operacion):
@@ -124,7 +130,7 @@ def _verificar(status, operacion):
             detalle = ctypes.FormatError(codigo).strip()
         except Exception:  # noqa: BLE001 - el mensaje es solo informativo
             detalle = ""
-        raise ErrorCNG(f"{operacion} falló (0x{codigo:08X}) {detalle}".strip())
+        raise ErrorCNG(f"{operacion} falló (0x{codigo:08X}) {detalle}".strip(), codigo=codigo)
 
 
 @dataclass
@@ -148,9 +154,29 @@ class LlaveTarjeta:
         return "non_repudiation" in self.usos or "content_commitment" in self.usos
 
 
+def describir_llave(llave: LlaveTarjeta) -> str:
+    """Resumen de una llave para el registro (nombre, certificado, uso y vigencia). Nunca lanza."""
+    try:
+        texto = f"llave={llave.nombre!r}, tipo_legado={llave.tipo_legado}"
+        if llave.cert is None:
+            return texto + ", sin certificado"
+        validez = llave.cert["tbs_certificate"]["validity"]
+        return (
+            f"{texto}, titular={llave.titular!r}, es_de_firma={llave.es_de_firma}, "
+            f"vigencia={validez['not_before'].native:%Y-%m-%d} a {validez['not_after'].native:%Y-%m-%d}"
+        )
+    except Exception as e:  # noqa: BLE001 - el registro nunca debe impedir firmar
+        return f"llave={getattr(llave, 'nombre', '?')!r} (no se pudo describir: {type(e).__name__})"
+
+
 def _abrir_proveedor():
     proveedor = _HANDLE()
-    _verificar(_OpenStorageProvider(ctypes.byref(proveedor), PROVEEDOR_TARJETA, 0), "NCryptOpenStorageProvider")
+    try:
+        _verificar(_OpenStorageProvider(ctypes.byref(proveedor), PROVEEDOR_TARJETA, 0), "NCryptOpenStorageProvider")
+    except ErrorCNG as e:
+        logger.warning("No se pudo abrir el proveedor «%s»: %s", PROVEEDOR_TARJETA, e)
+        raise
+    logger.info("Proveedor «%s» abierto.", PROVEEDOR_TARJETA)
     return proveedor
 
 
@@ -172,6 +198,7 @@ def listar_llaves() -> list[LlaveTarjeta]:
     """Enumera las llaves del DNIe que tienen certificado. No pide PIN."""
     proveedor = _abrir_proveedor()
     llaves = []
+    enumeradas = 0
     estado = ctypes.c_void_p()
     try:
         while True:
@@ -179,25 +206,53 @@ def listar_llaves() -> list[LlaveTarjeta]:
             status = _EnumKeys(proveedor, None, ctypes.byref(item), ctypes.byref(estado), _NCRYPT_SILENT_FLAG)
             if status & 0xFFFFFFFF == _NTE_NO_MORE_ITEMS:
                 break
-            _verificar(status, "NCryptEnumKeys")
+            if status & 0xFFFFFFFF == _NTE_NOT_FOUND:
+                # El proveedor no encuentra la tarjeta o sus llaves: equivale a «no hay llaves».
+                logger.warning(
+                    "NCryptEnumKeys devolvió 0x%08X (NTE_NOT_FOUND) en «%s» tras %d llave(s); "
+                    "se trata como fin de la enumeración.",
+                    status & 0xFFFFFFFF,
+                    PROVEEDOR_TARJETA,
+                    enumeradas,
+                )
+                break
+            try:
+                _verificar(status, "NCryptEnumKeys")
+            except ErrorCNG as e:
+                logger.warning(
+                    "NCryptEnumKeys falló con 0x%08X en «%s» tras %d llave(s): %s",
+                    status & 0xFFFFFFFF,
+                    PROVEEDOR_TARJETA,
+                    enumeradas,
+                    e,
+                )
+                raise
+            enumeradas += 1
             try:
                 info = item.contents
                 candidata = LlaveTarjeta(info.pszName, info.dwLegacyKeySpec, None)
             finally:
                 _FreeBuffer(item)
-            handle = _abrir_llave(proveedor, candidata, _NCRYPT_SILENT_FLAG)
+            try:
+                handle = _abrir_llave(proveedor, candidata, _NCRYPT_SILENT_FLAG)
+            except ErrorCNG as e:
+                logger.warning("No se pudo abrir la %s: %s", describir_llave(candidata), e)
+                raise
             try:
                 der = _leer_propiedad(handle, _PROP_CERTIFICADO)
-            except ErrorCNG:
+            except ErrorCNG as e:
+                logger.info("Llave sin certificado (se omite): %s; %s", describir_llave(candidata), e)
                 continue  # llave sin certificado asociado
             finally:
                 _FreeObject(handle)
             candidata.cert = x509.Certificate.load(der)
+            logger.info("Llave con certificado: %s", describir_llave(candidata))
             llaves.append(candidata)
     finally:
         if estado:
             _FreeBuffer(estado)
         _FreeObject(proveedor)
+    logger.info("Llaves enumeradas: %d; con certificado: %d.", enumeradas, len(llaves))
     if not llaves:
         raise ErrorCNG("No se encontró ninguna llave con certificado. ¿Está el DNIe insertado?")
     return llaves
@@ -214,11 +269,18 @@ def elegir_llave_de_firma(filtro: str | None = None) -> LlaveTarjeta:
     else:
         candidatas = [l for l in llaves if l.es_de_firma]
     if len(candidatas) != 1:
+        logger.warning(
+            "Llave de firma: %d candidata(s) entre %d llave(s) (%s); se esperaba 1.",
+            len(candidatas),
+            len(llaves),
+            f"filtro {filtro!r}" if filtro else "uso de no repudio",
+        )
         titulares = "\n  ".join(l.titular for l in (candidatas or llaves))
         raise ErrorCNG(
             f"Se esperaba 1 certificado de firma y hay {len(candidatas)}. "
             f"Usa --cert con parte del nombre. Disponibles:\n  {titulares}"
         )
+    logger.info("Llave de firma elegida: %s", describir_llave(candidatas[0]))
     return candidatas[0]
 
 
@@ -323,11 +385,21 @@ class FirmanteCNG(signers.Signer):
             "NCryptSignHash (tamaño)",
         )
         salida = (ctypes.c_ubyte * tam.value)()
-        # Aquí Windows muestra su cuadro de diálogo para el PIN (si la tarjeta lo pide).
-        _verificar(
-            _SignHash(llave, p_relleno, hash_buf, len(resumen), salida, tam, ctypes.byref(tam), flags),
-            "NCryptSignHash",
+        logger.info(
+            "NCryptSignHash: solicitando firma / PIN a Windows (resumen %s de %d bytes, ventana asociada: %s).",
+            digest_algorithm,
+            len(resumen),
+            "sí" if self._hwnd else "no",
         )
+        inicio = time.monotonic()
+        # Aquí Windows muestra su cuadro de diálogo para el PIN (si la tarjeta lo pide).
+        status = _SignHash(llave, p_relleno, hash_buf, len(resumen), salida, tam, ctypes.byref(tam), flags)
+        logger.info(
+            "NCryptSignHash terminó: estado 0x%08X en %d ms.",
+            status & 0xFFFFFFFF,
+            int((time.monotonic() - inicio) * 1000),
+        )
+        _verificar(status, "NCryptSignHash")
         return bytes(salida[: tam.value])
 
     def _asignar_ventana(self, llave):

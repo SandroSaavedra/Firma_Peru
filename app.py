@@ -39,7 +39,7 @@ from pathlib import Path
 
 import webview
 
-from dnie_cng import ErrorCNG, FirmanteCNG, SesionFirma, elegir_llave_de_firma
+from dnie_cng import ErrorCNG, FirmanteCNG, SesionFirma, describir_llave, elegir_llave_de_firma
 from firma_pdf import (
     MOTIVOS_POR_TIPO,
     TIPOS_SELLO,
@@ -143,6 +143,39 @@ def accion_tras_error(error: Exception) -> str:
     if codigo in _CODIGOS_DETENER:
         return "detener"
     return "continuar"
+
+
+def describir_error(error: BaseException) -> str:
+    """Clase, mensaje y código CNG (si lo hay) de un error, para el registro. Nunca lanza."""
+    try:
+        texto = str(error)
+    except Exception:  # noqa: BLE001
+        texto = "(sin texto)"
+    try:
+        codigo = getattr(error, "codigo", None)
+        if codigo is None and isinstance(error, Exception):
+            codigo = codigo_cng(error)
+        sufijo = f" [código 0x{codigo & 0xFFFFFFFF:08X}]" if isinstance(codigo, int) else ""
+    except Exception:  # noqa: BLE001
+        sufijo = ""
+    return f"{type(error).__name__}: {texto}{sufijo}"
+
+
+def _ms(desde: float) -> int:
+    """Milisegundos transcurridos desde `desde` (time.monotonic())."""
+    return int((time.monotonic() - desde) * 1000)
+
+
+def _resumen_opts(opts) -> str:
+    """OpcionesFirma en una línea para el registro (páginas y posiciones). Nunca lanza."""
+    try:
+        posicion = f"({opts.posicion.x:.3f}, {opts.posicion.y:.3f})" if opts.posicion else "predeterminada"
+        return (
+            f"tipo={opts.tipo}, paginas={opts.paginas}, pagina_firma={opts.pagina_firma}, "
+            f"posición={posicion}, posiciones por página={len(opts.posiciones_paginas or {})}"
+        )
+    except Exception:  # noqa: BLE001
+        return "opciones ilegibles"
 
 
 def clave_de_ruta(ruta) -> str:
@@ -495,6 +528,7 @@ class Api:
         try:
             llave = elegir_llave_de_firma()
         except ErrorCNG as e:
+            logger.warning("DNIe no disponible: %s", describir_error(e))
             return {"ok": False, "mensaje": mensaje_de_error(e)}
         except Exception as e:  # noqa: BLE001
             logger.exception("estado_dnie")
@@ -538,6 +572,7 @@ class Api:
         try:
             info, tamano = examinar_pdf(p)
         except ErrorFirma as e:
+            logger.warning("No se pudo abrir %s: %s", p.name, e)
             return {"ok": False, "mensaje": str(e)}
         if existente:
             self._retirar(existente)  # fila con error de un intento anterior
@@ -559,6 +594,10 @@ class Api:
             "datos": datos,
             "token": token,
         }
+        logger.info(
+            "Documento abierto: %s (páginas=%s, firmas=%d, docmdp=%s, estado=%s).",
+            item["nombre"], item["paginas"], len(item["firmas"]), item["docmdp"], item["estado"],
+        )
         ruta = Path(item["ruta"]) if item["ruta"] else None
         return {
             "ok": True,
@@ -603,6 +642,12 @@ class Api:
             item["estado"], item["mensaje"] = "omitido", "El documento está certificado y no admite nuevas firmas."
         with self._cerrojo_cola:
             self._cola.append(item)
+        logger.info(
+            "Documento en la cola: %s (%s); páginas=%d, firmas=%d, docmdp=%s, válido=%s, estado=%s, mensaje=%s.",
+            nombre,
+            "bytes, copia temporal" if item["temporal"] else ("con ruta" if ruta else "sin archivo"),
+            item["paginas"], len(item["firmas"]), item["docmdp"], item["valido"], item["estado"], item["mensaje"],
+        )
         return item
 
     @staticmethod
@@ -845,6 +890,7 @@ class Api:
                 self._borrar_temporal(str(archivo))
                 archivo = None
         if error and abrir:
+            logger.warning("No se pudo abrir %s (recibido como bytes): %s", nombre, error)
             return {"ok": False, "mensaje": error}
         item = self._nuevo_item(
             ruta=None, nombre=nombre, archivo=archivo, info=info, tamano=len(datos), error=error,
@@ -963,24 +1009,53 @@ class Api:
         firma Windows muestra su cuadro de diálogo del PIN.
         """
         if not self._pdf:
+            logger.warning("Firmar: no hay documento abierto.")
             return {"ok": False, "mensaje": "Abra primero un PDF."}
+        logger.info(
+            "Firmar: inicio con %s (%s; %s).",
+            self._pdf["nombre"],
+            "con ruta" if self._pdf["ruta"] else "sin ruta, recibido como bytes",
+            self._resumen_opciones(opciones),
+        )
         if not self._firmando.acquire(blocking=False):
+            logger.warning("Firmar: ya hay una firma en curso; se ignora el pedido.")
             return {"ok": False, "mensaje": "Ya hay una firma en curso."}
         try:
             opciones = dict(opciones or {})
             if not opciones.get("destino") and not self._pdf["ruta"]:
                 # Llegó como bytes: no hay «junto al original», se pregunta dónde guardar.
+                logger.info("Firmar: el PDF no tiene ruta de origen; se abre el diálogo «Guardar como».")
                 eleccion = self.elegir_destino()
                 if not eleccion.get("ok"):
+                    logger.info(
+                        "Firmar: diálogo «Guardar como» %s; no se firma.",
+                        "cancelado" if eleccion.get("cancelado") else f"sin destino ({eleccion.get('mensaje')})",
+                    )
                     return eleccion  # {"ok": False, "cancelado": True} si el usuario cancela
+                logger.info("Firmar: destino elegido %s.", eleccion["ruta"])
                 opciones["destino"] = eleccion["ruta"]
             return self._ejecutor.submit(self._firmar, opciones).result()
         finally:
             self._firmando.release()
 
+    @staticmethod
+    def _resumen_opciones(opciones) -> str:
+        """Opciones de firma en una línea para el registro. Nunca lanza."""
+        try:
+            o = opciones if isinstance(opciones, dict) else {}
+            return (
+                f"tipo={o.get('tipo') or 'el de la configuración'}, paginas={o.get('paginas', 'todas')}, "
+                f"pagina_firma={o.get('pagina_firma', -1)}, caja={'sí' if o.get('caja') else 'no'}, "
+                f"posiciones por página={len(o.get('posiciones_paginas') or {})}, "
+                f"destino indicado={'sí' if o.get('destino') else 'no'}"
+            )
+        except Exception:  # noqa: BLE001
+            return "opciones ilegibles"
+
     def _firmar(self, opciones: dict) -> dict:
         item = self._buscar(id=self._pdf["id"])
         entrada = Path(self._pdf["archivo"])
+        inicio = time.monotonic()
         try:
             preparar_imagenes_iniciales()
             opts = self._opciones_firma(
@@ -992,18 +1067,30 @@ class Api:
             )
             destino = opciones.get("destino")
             salida = Path(destino) if destino else ruta_salida_predeterminada(entrada, opts.tipo)
+            logger.info("Firma: opciones listas en %d ms (%s; salida %s).", _ms(inicio), _resumen_opts(opts), salida.name)
             if salida.suffix.lower() != ".pdf":
                 raise ErrorFirma("El archivo de salida debe tener extensión .pdf.")
 
             llave = elegir_llave_de_firma()
-            signer = FirmanteCNG(llave, hwnd=self._hwnd())
+            logger.info("Firma: llave elegida en %d ms (%s).", _ms(inicio), describir_llave(llave))
+            hwnd = self._hwnd()
+            signer = FirmanteCNG(llave, hwnd=hwnd)
+            logger.info(
+                "Firma: se solicitará el PIN a Windows para %s (ventana asociada: %s).",
+                self._pdf["nombre"], "sí" if hwnd else "no",
+            )
+            antes = time.monotonic()
             resultado = firmar_pdf(entrada, salida, signer, llave.titular, opts)
+            logger.info(
+                "Firma: firmar_pdf terminó en %d ms: %s (modo=%s, páginas selladas=%d); total %d ms.",
+                _ms(antes), Path(resultado.salida).name, resultado.modo, len(resultado.paginas_selladas), _ms(inicio),
+            )
         except (ErrorCNG, ErrorFirma, OSError, KeyError, ValueError) as e:
-            logger.warning("Firma fallida: %s", e)
+            logger.warning("Firma fallida tras %d ms: %s", _ms(inicio), describir_error(e))
             self._marcar_tras_error(item, e)
             return {"ok": False, "mensaje": mensaje_de_error(e)}
         except Exception as e:  # noqa: BLE001
-            logger.exception("Firma fallida")
+            logger.exception("Firma fallida tras %d ms: %s", _ms(inicio), describir_error(e))
             self._marcar_tras_error(item, e)
             return {"ok": False, "mensaje": mensaje_de_error(e)}
         self._generados.add(str(Path(resultado.salida).resolve()))
@@ -1063,21 +1150,30 @@ class Api:
         posiciones_paginas}}) para los documentos con posición, página del campo
         o posiciones por página propias.
         """
+        logger.info("Lote: pedido de firma (%s).", self._resumen_opciones(opciones))
         if not self._firmando.acquire(blocking=False):
+            logger.warning("Lote: ya hay una firma en curso; se ignora el pedido.")
             return {"ok": False, "mensaje": "Ya hay una firma en curso."}
         try:
             opciones = dict(opciones or {})
             with self._cerrojo_cola:
                 items = [i for i in self._cola if i["valido"] and i["estado"] in ("pendiente", "error")]
             if not items:
+                logger.info("Lote: no hay documentos pendientes de firma.")
                 return {"ok": False, "mensaje": "No hay documentos pendientes de firma."}
             en_carpeta = bool(opciones.get("en_carpeta"))
             carpeta = None
             # Los PDF recibidos como bytes no tienen carpeta de origen: se pregunta UNA vez.
             if en_carpeta or any(not i["ruta"] for i in items):
+                logger.info(
+                    "Lote: se abre el diálogo de carpeta (%s).",
+                    "guardar todo en una carpeta" if en_carpeta else "hay PDF sin ruta de origen",
+                )
                 carpeta = self._elegir_carpeta()
                 if carpeta is None:
+                    logger.info("Lote: diálogo de carpeta cancelado; no se firma.")
                     return {"ok": False, "cancelado": True}
+                logger.info("Lote: carpeta elegida %s.", carpeta)
             self._cancelar_lote.clear()
             return self._ejecutor.submit(self._firmar_lote, items, opciones, carpeta, en_carpeta).result()
         finally:
@@ -1123,6 +1219,10 @@ class Api:
             salida = ruta_salida_predeterminada(carpeta / nombre_seguro(item["nombre"]), opts.tipo)
         else:
             salida = ruta_salida_predeterminada(Path(item["ruta"]), opts.tipo)
+        logger.info(
+            "Lote: %s (firmas=%d, docmdp=%s): %s; salida %s.",
+            item["nombre"], len(item["firmas"]), item["docmdp"], _resumen_opts(opts), salida.name,
+        )
         return firmar_pdf(Path(item["archivo"]), salida, firmante, titular, opts)
 
     def _firmar_lote(self, items: list[dict], opciones: dict, carpeta: Path | None, en_carpeta: bool) -> dict:
@@ -1133,10 +1233,17 @@ class Api:
         firmas_en_sesion = 0
         self._emitir_progreso({"evento": "inicio", "total": total})
         logger.info("Lote: %d documento(s) por firmar.", total)
+        inicio_lote = time.monotonic()
         try:
             preparar_imagenes_iniciales()
             llave = elegir_llave_de_firma()
-            sesion = SesionFirma(llave, self._hwnd())
+            logger.info("Lote: llave elegida en %d ms (%s).", _ms(inicio_lote), describir_llave(llave))
+            hwnd = self._hwnd()
+            sesion = SesionFirma(llave, hwnd)
+            logger.info(
+                "Lote: se abre la sesión CNG; se solicitará el PIN a Windows (ventana asociada: %s).",
+                "sí" if hwnd else "no",
+            )
             try:
                 with sesion as firmante:
                     for indice, item in enumerate(items, 1):
@@ -1149,6 +1256,7 @@ class Api:
                         }
                         self._marcar(item, "firmando")
                         self._emitir_progreso({**base, "estado": "firmando"})
+                        antes = time.monotonic()
                         try:
                             resultado = self._firmar_item(
                                 item, opciones, ajustes.get(item["id"]), firmante, llave.titular, carpeta, en_carpeta
@@ -1156,7 +1264,16 @@ class Api:
                         except Exception as e:  # noqa: BLE001 - cada error se clasifica
                             texto = mensaje_de_error(e)
                             accion = accion_tras_error(e)
-                            logger.warning("Lote: documento %d de %d con error (%s): %s", indice, total, accion, e)
+                            if isinstance(e, (ErrorCNG, ErrorFirma, OSError, KeyError, ValueError)):
+                                logger.warning(
+                                    "Lote: documento %d de %d (%s) con error tras %d ms (%s): %s",
+                                    indice, total, item["nombre"], _ms(antes), accion, describir_error(e),
+                                )
+                            else:
+                                logger.exception(
+                                    "Lote: documento %d de %d (%s) con error inesperado (%s): %s",
+                                    indice, total, item["nombre"], accion, describir_error(e),
+                                )
                             if accion == "cancelado":
                                 self._marcar(item, "pendiente")
                                 self._emitir_progreso({**base, "estado": "pendiente", "mensaje": texto})
@@ -1170,6 +1287,10 @@ class Api:
                                 detenido, mensaje = "tarjeta", texto
                                 break
                             continue
+                        logger.info(
+                            "Lote: documento %d de %d (%s) firmado en %d ms: %s (modo=%s).",
+                            indice, total, item["nombre"], _ms(antes), Path(resultado.salida).name, resultado.modo,
+                        )
                         procesados.add(item["id"])
                         self._generados.add(str(Path(resultado.salida).resolve()))
                         self._marcar(item, "firmado", None, resultado.salida)
@@ -1180,7 +1301,10 @@ class Api:
             finally:
                 firmas_en_sesion = sesion.firmas
         except Exception as e:  # noqa: BLE001 - sin llave o sin sesión no se firma nada
-            logger.warning("Lote detenido antes de firmar: %s", e)
+            if isinstance(e, (ErrorCNG, ErrorFirma, OSError)):
+                logger.warning("Lote detenido antes de firmar tras %d ms: %s", _ms(inicio_lote), describir_error(e))
+            else:
+                logger.exception("Lote detenido antes de firmar: %s", describir_error(e))
             detenido, mensaje = "tarjeta", mensaje_de_error(e)
         # Lo que no se llegó a procesar queda «Pendiente» (también tras cancelar o detenerse).
         pendientes = 0

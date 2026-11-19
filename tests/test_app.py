@@ -5,6 +5,7 @@ ni tocar el DNIe: la llave se simula y la firma CNG también.
 import base64
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -682,3 +683,134 @@ def test_firmar_solo_acepta_motivos_de_la_lista(api, pdf_multipagina, tipo, moti
     r = api.firmar({"paginas": "ultima", "tipo": tipo, "motivo": motivo})
     assert r["ok"], r
     assert _rect_y_motivo(r["salida"])[1] == esperado
+
+
+# --- registro de diagnóstico del flujo de firma ---------------------------------
+
+
+def _lineas(caplog, nombre="firmador") -> str:
+    return "\n".join(f"{r.levelname} {r.getMessage()}" for r in caplog.records if r.name.startswith(nombre))
+
+
+def test_firma_correcta_registra_cada_fase(api, pdf_multipagina, caplog):
+    caplog.set_level("INFO")
+    api.abrir_ruta(str(pdf_multipagina))
+    r = api.firmar({"paginas": "todas", "tipo": "firma"})
+    assert r["ok"], r
+    texto = _lineas(caplog)
+    assert "Documento en la cola: entrada.pdf" in texto and "firmas=0" in texto and "docmdp=None" in texto
+    assert "Firmar: inicio con entrada.pdf" in texto and "tipo=firma" in texto and "paginas=todas" in texto
+    assert "opciones listas" in texto
+    assert "PRUEBA FIRMANTE FIR 12345678" in texto and "es_de_firma=True" in texto
+    assert "se solicitará el PIN a Windows" in texto
+    assert re.search(r"firmar_pdf terminó en \d+ ms: entrada_firmado\.pdf", texto)
+
+
+def test_firma_fallida_por_el_dnie_registra_clase_mensaje_y_codigo(api, pdf_multipagina, monkeypatch, caplog):
+    def _sin_tarjeta(filtro=None):
+        raise app.ErrorCNG("NCryptOpenStorageProvider falló (0x80100069) Se quitó la tarjeta", codigo=0x80100069)
+
+    monkeypatch.setattr(app, "elegir_llave_de_firma", _sin_tarjeta)
+    caplog.set_level("INFO")
+    api.abrir_ruta(str(pdf_multipagina))
+    r = api.firmar({})
+    assert r["ok"] is False and r["mensaje"] == app.mensaje_de_error(_excepcion(_sin_tarjeta))
+    texto = _lineas(caplog)
+    assert "WARNING Firma fallida" in texto
+    assert "ErrorCNG: NCryptOpenStorageProvider falló (0x80100069) Se quitó la tarjeta" in texto
+    assert "[código 0x80100069]" in texto
+    assert "se solicitará el PIN" not in texto
+
+
+def _excepcion(funcion) -> Exception:
+    try:
+        funcion()
+    except Exception as e:  # noqa: BLE001
+        return e
+    raise AssertionError("no lanzó")
+
+
+def test_error_inesperado_de_firma_se_registra_con_traza(api, pdf_multipagina, monkeypatch, caplog):
+    monkeypatch.setattr(app, "firmar_pdf", lambda *a, **k: 1 / 0)
+    api.abrir_ruta(str(pdf_multipagina))
+    r = api.firmar({})
+    assert r == {"ok": False, "mensaje": "Error inesperado: division by zero"}
+    fallo = [x for x in caplog.records if x.getMessage().startswith("Firma fallida")]
+    assert fallo and fallo[0].exc_info and "ZeroDivisionError" in fallo[0].getMessage()
+
+
+def test_firma_de_pdf_sin_ruta_registra_el_dialogo_de_guardar(api, pdf_multipagina, tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(app, "carpeta_descargas", lambda: tmp_path)
+    api._asignar_ventana(VentanaFalsa(None))
+    monkeypatch.setattr(api, "_hwnd", lambda: None)
+    caplog.set_level("INFO")
+    assert _subir(api, "Contrato.pdf", pdf_multipagina.read_bytes())["ok"]
+    assert api.firmar({"paginas": "todas"}) == {"ok": False, "cancelado": True}
+    texto = _lineas(caplog)
+    assert "Documento en la cola: Contrato.pdf (bytes, copia temporal)" in texto
+    assert "«Guardar como»" in texto and "cancelado" in texto
+
+
+def test_firma_en_curso_se_registra(api, pdf_multipagina, caplog):
+    api.abrir_ruta(str(pdf_multipagina))
+    api._firmando.acquire()
+    try:
+        assert api.firmar({})["mensaje"] == "Ya hay una firma en curso."
+    finally:
+        api._firmando.release()
+    assert "ya hay una firma en curso" in _lineas(caplog)
+
+
+def test_lote_registra_llave_pin_y_cada_documento(api, pdf_multipagina, monkeypatch, caplog):
+    monkeypatch.setattr(app, "SesionFirma", _SesionFalsa)
+    caplog.set_level("INFO")
+    assert api.agregar_rutas([str(pdf_multipagina)])["ok"]
+    r = api.firmar_lote({"paginas": "todas"})
+    assert r["ok"] and len(r["firmados"]) == 1, r
+    texto = _lineas(caplog)
+    assert "Lote: llave elegida" in texto and "PRUEBA FIRMANTE FIR 12345678" in texto
+    assert "se solicitará el PIN a Windows" in texto
+    assert re.search(r"Lote: documento 1 de 1 \(entrada\.pdf\) firmado en \d+ ms", texto)
+
+
+def test_lote_con_error_registra_clase_y_codigo(api, pdf_multipagina, monkeypatch, caplog):
+    def _sin_tarjeta(filtro=None):
+        raise app.ErrorCNG("NCryptOpenKey falló (0x8010000C) No hay tarjeta", codigo=0x8010000C)
+
+    monkeypatch.setattr(app, "elegir_llave_de_firma", _sin_tarjeta)
+    assert api.agregar_rutas([str(pdf_multipagina)])["ok"]
+    r = api.firmar_lote({})
+    assert r["detenido"] == "tarjeta"
+    texto = _lineas(caplog)
+    assert "Lote detenido antes de firmar" in texto and "ErrorCNG" in texto and "[código 0x8010000C]" in texto
+
+
+class _SesionFalsa:
+    """SesionFirma sin CNG: entrega el firmante de prueba (ver fixture `firmante`)."""
+
+    def __init__(self, llave, hwnd=None):
+        self.firmante = app.FirmanteCNG(llave, hwnd=hwnd)
+        self.firmas = 0
+
+    def __enter__(self):
+        return self.firmante
+
+    def __exit__(self, *excepcion):
+        return False
+
+
+def test_estado_dnie_sin_tarjeta_queda_en_el_registro(monkeypatch, caplog):
+    def _sin_tarjeta(filtro=None):
+        raise app.ErrorCNG("No se encontró ninguna llave con certificado. ¿Está el DNIe insertado?")
+
+    monkeypatch.setattr(app, "elegir_llave_de_firma", _sin_tarjeta)
+    app.Api().estado_dnie()
+    assert "DNIe no disponible: ErrorCNG: No se encontró ninguna llave" in _lineas(caplog)
+
+
+def test_registrar_un_error_nunca_falla():
+    class Raro(Exception):
+        def __str__(self):
+            raise RuntimeError("sin texto")
+
+    assert "Raro" in app.describir_error(Raro())

@@ -115,3 +115,107 @@ def test_build_ps1_toma_la_version_de_version_py():
     texto = (RAIZ / "version.py").read_text(encoding="utf-8")
     coincidencia = re.search(patron, texto, re.M)
     assert coincidencia and coincidencia.group(1) == version.VERSION
+
+
+# --- instrumentación de dnie_cng ---------------------------------------------
+
+
+def test_error_cng_conserva_el_codigo_sin_cambiar_el_mensaje():
+    import dnie_cng
+
+    with pytest.raises(dnie_cng.ErrorCNG) as error:
+        dnie_cng._verificar(0x8010006E, "NCryptSignHash")
+    assert error.value.codigo == 0x8010006E
+    assert str(error.value).startswith("NCryptSignHash falló (0x8010006E)")
+    assert dnie_cng.ErrorCNG("sin código").codigo is None
+
+
+def _firmante_cng(monkeypatch, material_prueba, estados):
+    import dnie_cng
+
+    llamadas = iter(estados)
+    monkeypatch.setattr(dnie_cng, "cadena_intermedia", lambda c: [])
+    monkeypatch.setattr(dnie_cng, "_SignHash", lambda *a: next(llamadas))
+    llave = dnie_cng.LlaveTarjeta(nombre="llave-prueba", tipo_legado=0, cert=material_prueba[1])
+    return dnie_cng.FirmanteCNG(llave)
+
+
+def _cng(caplog) -> str:
+    return "\n".join(r.getMessage() for r in caplog.records if r.name == "firmador.cng")
+
+
+def test_firma_cng_registra_antes_y_despues_del_pin(monkeypatch, material_prueba, caplog):
+    caplog.set_level("INFO")
+    firmante = _firmante_cng(monkeypatch, material_prueba, [0, 0])
+    resumen = bytes(range(32))
+    firmante._firmar_con_handle(1, resumen, "sha256")
+    texto = _cng(caplog)
+    assert "solicitando firma / PIN" in texto
+    assert re.search(r"NCryptSignHash terminó: estado 0x00000000 en \d+ ms", texto)
+    assert resumen.hex() not in texto.lower()  # nunca el resumen, solo su longitud
+    assert "32 bytes" in texto
+
+
+def test_firma_cng_fallida_registra_el_estado(monkeypatch, material_prueba, caplog):
+    import dnie_cng
+
+    caplog.set_level("INFO")
+    firmante = _firmante_cng(monkeypatch, material_prueba, [0, 0x8010006E])
+    with pytest.raises(dnie_cng.ErrorCNG):
+        firmante._firmar_con_handle(1, bytes(32), "sha256")
+    assert re.search(r"NCryptSignHash terminó: estado 0x8010006E en \d+ ms", _cng(caplog))
+
+
+def test_elegir_llave_registra_la_elegida_o_el_motivo(monkeypatch, material_prueba, caplog):
+    import dnie_cng
+
+    caplog.set_level("INFO")
+    llave = dnie_cng.LlaveTarjeta(nombre="llave-prueba", tipo_legado=2, cert=material_prueba[1])
+    monkeypatch.setattr(dnie_cng, "listar_llaves", lambda: [llave])
+    assert dnie_cng.elegir_llave_de_firma() is llave
+    texto = _cng(caplog)
+    assert "Llave de firma elegida" in texto and "llave-prueba" in texto and "PRUEBA FIRMANTE FIR 12345678" in texto
+    with pytest.raises(dnie_cng.ErrorCNG):
+        dnie_cng.elegir_llave_de_firma("no-existe")
+    assert "0 candidata(s)" in _cng(caplog)
+
+
+def test_describir_llave_nunca_falla(material_prueba):
+    import dnie_cng
+
+    texto = dnie_cng.describir_llave(dnie_cng.LlaveTarjeta(nombre="x", tipo_legado=2, cert=material_prueba[1]))
+    assert "es_de_firma=True" in texto and "tipo_legado=2" in texto and "vigencia" in texto
+    assert "x" in dnie_cng.describir_llave(dnie_cng.LlaveTarjeta(nombre="x", tipo_legado=0, cert=None))
+
+
+def _enumeracion_falsa(monkeypatch, estado_enum):
+    import dnie_cng
+
+    liberados = []
+    monkeypatch.setattr(dnie_cng, "_abrir_proveedor", lambda: dnie_cng._HANDLE(7))
+    monkeypatch.setattr(dnie_cng, "_EnumKeys", lambda *a: estado_enum)
+    monkeypatch.setattr(dnie_cng, "_FreeObject", lambda h: liberados.append(int(h.value)) or 0)
+    monkeypatch.setattr(dnie_cng, "_FreeBuffer", lambda b: 0)
+    return liberados
+
+
+def test_enumeracion_sin_llaves_nte_not_found_da_el_mensaje_amigable(monkeypatch, caplog):
+    import dnie_cng
+
+    liberados = _enumeracion_falsa(monkeypatch, 0x80090011)  # NTE_NOT_FOUND
+    with pytest.raises(dnie_cng.ErrorCNG) as error:
+        dnie_cng.listar_llaves()
+    assert str(error.value) == "No se encontró ninguna llave con certificado. ¿Está el DNIe insertado?"
+    assert liberados == [7]  # el proveedor se libera
+    avisos = [r for r in caplog.records if r.name == "firmador.cng" and r.levelname == "WARNING"]
+    assert any("0x80090011" in r.getMessage() and dnie_cng.PROVEEDOR_TARJETA in r.getMessage() for r in avisos)
+
+
+def test_otro_fallo_de_enumeracion_se_registra_y_se_propaga(monkeypatch, caplog):
+    import dnie_cng
+
+    _enumeracion_falsa(monkeypatch, 0x80100069)
+    with pytest.raises(dnie_cng.ErrorCNG) as error:
+        dnie_cng.listar_llaves()
+    assert error.value.codigo == 0x80100069 and str(error.value).startswith("NCryptEnumKeys falló (0x80100069)")
+    assert re.search(r"NCryptEnumKeys falló con 0x80100069", _cng(caplog))
