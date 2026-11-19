@@ -2,9 +2,19 @@
 Núcleo de firma de PDF, independiente de la interfaz (CLI o escritorio).
 
 Produce UNA sola firma criptográfica PAdES (subfilter ETSI.CAdES.detached)
-con un campo de firma visible. Con `paginas="todas"` ese único campo tiene un
-widget por página (/Kids), todos con el mismo sello: el sello de cada página
-es parte de la firma y al hacer clic en él el lector muestra su estado.
+con un campo de firma visible de UN solo widget, en la página de firma
+(clic = estado de la firma en el lector). Con `paginas="todas"` cada una de
+las demás páginas recibe, en la misma revisión (cubiertas por la firma):
+  - una anotación /Stamp bloqueada (imprimible, solo lectura, bloqueada) que
+    muestra el mismo XObject de apariencia del campo;
+  - encima, una anotación /Link con el mismo /Rect y una acción JavaScript
+    que en Acrobat muestra una ventana con el estado de ESA firma (otros
+    lectores pueden ignorar el clic; Acrobat puede pedir permitir JavaScript).
+Por qué no un widget por página: un campo de firma con varios widgets se
+valida bien solo, pero en cuanto se agrega otra firma Acrobat marca la
+anterior como «documento modificado» (comprobado en Acrobat). Con /Stamp +
+/Link las firmas anteriores siguen válidas («se han efectuado cambios
+posteriores»).
 
 Convención de coordenadas (la interfaz debe usar la misma):
   - La posición del sello (su esquina inferior izquierda) se expresa en
@@ -12,8 +22,8 @@ Convención de coordenadas (la interfaz debe usar la misma):
     y /MediaBox (lo mismo que `page.view` en pdf.js). Origen abajo a la
     izquierda, espacio PDF SIN ROTAR.
   - Cada página puede tener su propia posición (`posiciones_paginas`); las
-    demás usan la del documento. Todos los sellos siguen siendo widgets del
-    mismo campo de firma: cambia solo su /Rect.
+    demás usan la del documento. Cambia solo el /Rect del sello (widget del
+    campo en la página de firma, /Stamp + /Link en las demás).
   - El tamaño del sello es fijo por tipo y en puntos PDF (TAMANOS_SELLO): mide
     lo mismo en cualquier tamaño de página. Si en la posición pedida no cabe,
     se desplaza hasta quedar dentro de la página.
@@ -23,15 +33,16 @@ Convención de coordenadas (la interfaz debe usar la misma):
     girado junto con la página.
 
 PDF que ya tienen firmas: la nueva firma se agrega en una revisión
-incremental con su propio campo, que con `paginas="todas"` también tiene un
-widget por página. Un campo de firma nuevo y sus widgets son un cambio
-permitido después de una firma de aprobación: las firmas anteriores siguen
-intactas y válidas (pyHanko las reporta con modificaciones FORM_FILLING). Por
-eso se sella igual que en un PDF sin firmas.
+incremental con su propio campo y, con `paginas="todas"`, sus propios
+/Stamp + /Link en las demás páginas. Un campo de firma nuevo y anotaciones
+nuevas son cambios permitidos después de una firma de aprobación: Acrobat da
+las firmas anteriores por válidas y `validacion.py` las reporta con cambios
+permitidos (nivel ANNOTATIONS). Por eso se sella igual que en un PDF sin
+firmas.
 Documentos certificados (DocMDP): con nivel 1 (sin cambios) se rechaza la
 operación. Con nivel 2 o 3 solo se coloca el campo de firma en su página
-(modo "solo_campo"), como antes: no está comprobado que los validadores
-acepten widgets en las demás páginas tras una certificación.
+(modo "solo_campo"): el nivel 2 no permite anotaciones y el 3 se trata igual
+por simplicidad.
 
 Tipos de sello (sin borde, letra sin serifa: Arial incrustada si está
 disponible, si no Helvetica estándar):
@@ -45,6 +56,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import math
 import os
@@ -173,7 +185,8 @@ class ResultadoFirma:
     total_paginas: int
     paginas_selladas: list[int]
     pagina_firma: int
-    # "contenido": sello normal (con "todas", un widget por página), haya o no firmas previas.
+    # "contenido": sello normal (con "todas", el campo en su página y un /Stamp en cada
+    # una de las demás), haya o no firmas previas.
     # "solo_campo": documento certificado (DocMDP 2 o 3): solo el campo de firma en su página.
     modo: str
     firmas_previas: int
@@ -629,7 +642,7 @@ def _misma_ruta(a, b) -> bool:
         return Path(a).resolve() == Path(b).resolve()
 
 
-# --- firma con un widget por página ----------------------------------------------
+# --- firma con sello en cada página ----------------------------------------------
 
 
 async def _firmar_con_paso_previo(pdf_signer, writer, salida, paso_previo):
@@ -658,46 +671,94 @@ async def _firmar_con_paso_previo(pdf_signer, writer, salida, paso_previo):
     await firmado.post_signature_processing(salida_real)
 
 
-def _agregar_widgets(writer, campo: str, paginas, pagina_firma: int, posicion_de, tipo: str):
+# /F del sello de las demás páginas: Print | ReadOnly | Locked | LockedContents.
+FLAGS_SELLO = 4 | 64 | 128 | 512
+# /F del enlace que va encima del sello: Print.
+FLAGS_ENLACE = 4
+
+# JavaScript de Acrobat que, al hacer clic en el sello de una página que no es
+# la de firma, muestra el estado de ESA firma. Solo ASCII: los acentos van
+# como escapes \uXXXX de JavaScript. `signatureValidate()` devuelve -1 (no es
+# campo de firma), 0 (sin firmar), 1 (validez desconocida), 2 (no válida),
+# 3 (válida, identidad no verificada) o 4 (válida); `signatureInfo()` da el
+# nombre del firmante (`name`) y la fecha (`date`, un Date).
+_SCRIPT_ESTADO_FIRMA = (
+    r'var p = "\n\nEl campo de esta firma est\u00e1 en la p\u00e1gina __PAGINA__.";'
+    r" try {"
+    r" var f = this.getField(__CAMPO__);"
+    r" var e = f.signatureValidate();"
+    r" var i = f.signatureInfo();"
+    r' var t = ["Sin firmar", "Validez desconocida", "Firma NO V\u00c1LIDA",'
+    r' "Firma v\u00e1lida (identidad no verificada)", "Firma V\u00c1LIDA"][e] || "Validez desconocida";'
+    r' var d = i.date ? util.printd("dd/mm/yyyy HH:MM:ss", i.date) : "";'
+    r' app.alert("Firmado digitalmente por: " + i.name + "\nFecha: " + d + "\nEstado: " + t + p, 3);'
+    r" } catch (x) {"
+    r' app.alert("Sello de la firma digital " + __CAMPO__ + "." + p, 3);'
+    r" }"
+)
+
+
+def script_estado_firma(campo: str, pagina_firma: int) -> str:
+    """JavaScript (solo ASCII) que muestra el estado de la firma `campo`; `pagina_firma` desde 0."""
+    return _SCRIPT_ESTADO_FIRMA.replace("__CAMPO__", json.dumps(campo)).replace("__PAGINA__", str(pagina_firma + 1))
+
+
+def _agregar_sellos(writer, campo: str, firmante: str, paginas, pagina_firma: int, posicion_de, tipo: str):
     """
-    Agrega al campo de firma `campo` un widget por cada página de `paginas`
-    (además del que pyHanko ya creó en `pagina_firma`), en la posición que
-    devuelve `posicion_de(índice)`. El sello mide lo mismo en todas las páginas
-    y la apariencia se dibuja en coordenadas propias (/BBox), así que todos los
-    widgets comparten el XObject de apariencia del campo (mismo sello y misma
-    hora, la de la firma) aunque cada uno tenga su /Rect. Clic en
-    cualquiera = estado de la firma en Acrobat (un campo con varios widgets,
-    ISO 32000-1 § 12.7.3.1).
+    Sella las páginas de `paginas` distintas de `pagina_firma` (donde ya está
+    el ÚNICO widget del campo de firma `campo`). En cada una agrega:
+      - una anotación /Stamp bloqueada (FLAGS_SELLO) que muestra el mismo
+        XObject de apariencia del campo (mismo sello y misma hora; no se
+        dibuja de nuevo por página, así 600 páginas siguen siendo rápidas);
+      - encima, una anotación /Link con el mismo /Rect cuya acción JavaScript
+        muestra en Acrobat el estado de ESTA firma (otros lectores pueden
+        ignorar el clic).
+    El /Rect sale de `posicion_de(índice)`; el tamaño es el fijo del tipo.
+    Un campo de firma con varios widgets hace que Acrobat dé por modificada la
+    firma en cuanto se agrega otra firma; estas anotaciones no.
     """
     ((_, _, campo_ref),) = fields.enumerate_sig_fields(writer, with_name=campo)
-    campo_firma = campo_ref.get_object()
-    (widget_firma_ref,) = campo_firma["/Kids"]
-    widget_firma = widget_firma_ref.get_object()
-    widget_firma[pdf_name("/Parent")] = campo_ref
-
-    apariencia = widget_firma["/AP"].raw_get("/N")
-    hijos = generic.ArrayObject()
+    apariencia = campo_ref.get_object()["/AP"].raw_get("/N")
+    script = script_estado_firma(campo, pagina_firma)
+    descripcion = (
+        f"Sello de la firma digital «{campo}» de {firmante}. "
+        f"El campo de la firma está en la página {pagina_firma + 1}."
+    )
     for indice in paginas:
         if indice == pagina_firma:
-            hijos.append(widget_firma_ref)
             continue
-        rect = rect_sello(posicion_de(indice), vista_de_pagina(writer, indice), tipo)
+        rect = [round(v, 4) for v in rect_sello(posicion_de(indice), vista_de_pagina(writer, indice), tipo)]
         pagina_ref = writer.find_page_for_modification(indice)[0]
-        widget = generic.DictionaryObject(
+        sello = generic.DictionaryObject(
             {
                 pdf_name("/Type"): pdf_name("/Annot"),
-                pdf_name("/Subtype"): pdf_name("/Widget"),
-                pdf_name("/F"): generic.NumberObject(int(widget_firma["/F"])),
-                pdf_name("/Rect"): generic.ArrayObject(generic.FloatObject(round(v, 4)) for v in rect),
+                pdf_name("/Subtype"): pdf_name("/Stamp"),
+                pdf_name("/F"): generic.NumberObject(FLAGS_SELLO),
+                pdf_name("/Rect"): generic.ArrayObject(generic.FloatObject(v) for v in rect),
                 pdf_name("/P"): pagina_ref,
-                pdf_name("/Parent"): campo_ref,
+                pdf_name("/Name"): pdf_name("/FirmaDigital"),
+                pdf_name("/Contents"): generic.TextStringObject(descripcion),
                 pdf_name("/AP"): generic.DictionaryObject({pdf_name("/N"): apariencia}),
             }
         )
-        widget_ref = writer.add_object(widget)
-        writer.register_annotation(pagina_ref, widget_ref)
-        hijos.append(widget_ref)
-    campo_firma[pdf_name("/Kids")] = hijos
+        enlace = generic.DictionaryObject(
+            {
+                pdf_name("/Type"): pdf_name("/Annot"),
+                pdf_name("/Subtype"): pdf_name("/Link"),
+                pdf_name("/F"): generic.NumberObject(FLAGS_ENLACE),
+                pdf_name("/Rect"): generic.ArrayObject(generic.FloatObject(v) for v in rect),
+                pdf_name("/Border"): generic.ArrayObject([generic.NumberObject(0)] * 3),
+                pdf_name("/Contents"): generic.TextStringObject("Ver el estado de la firma digital."),
+                pdf_name("/A"): generic.DictionaryObject(
+                    {
+                        pdf_name("/S"): pdf_name("/JavaScript"),
+                        pdf_name("/JS"): generic.TextStringObject(script),
+                    }
+                ),
+            }
+        )
+        writer.register_annotation(pagina_ref, writer.add_object(sello))
+        writer.register_annotation(pagina_ref, writer.add_object(enlace))
 
 
 def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma | None = None) -> ResultadoFirma:
@@ -755,28 +816,24 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
                 "El documento está certificado y no permite ningún cambio, ni siquiera "
                 "nuevas firmas. No se puede firmar sin invalidar la certificación."
             )
-        # Con firmas previas de aprobación se sella igual que sin firmas; solo un
-        # documento certificado (DocMDP 2 o 3) conserva el sello en el campo.
+        # Con firmas previas de aprobación se sella igual que sin firmas; un
+        # documento certificado (DocMDP 2 o 3) solo recibe el campo de firma
+        # (sin anotaciones en las demás páginas).
         modo = "solo_campo" if nivel_docmdp is not None else "contenido"
 
         paginas = [pagina_firma]
-        # "todas": el campo de firma tiene un widget por página (/Kids), así
-        # el sello de cada página es parte de la firma y no contenido dibujado.
-        varios_widgets = modo == "contenido" and opciones.paginas == "todas"
-        if varios_widgets:
+        # "todas": el campo de firma (un solo widget) va en su página y las
+        # demás reciben un /Stamp con la misma apariencia más un /Link, en la
+        # misma revisión (cubiertos por la firma).
+        sellos_extra = modo == "contenido" and opciones.paginas == "todas"
+        if sellos_extra:
             paginas = list(range(total))
 
         campo = _nombre_campo_libre(writer, opciones.nombre_campo)
         caja_campo = rect_sello(posicion_de(pagina_firma), vista_de_pagina(writer, pagina_firma), tipo)
+        # Campo y widget en un mismo diccionario (sin /Kids): un solo widget.
         fields.append_signature_field(
-            writer,
-            fields.SigFieldSpec(
-                sig_field_name=campo,
-                on_page=pagina_firma,
-                box=caja_campo,
-                # Campo y widget separados: el campo luego recibe más widgets.
-                combine_annotation=not varios_widgets,
-            ),
+            writer, fields.SigFieldSpec(sig_field_name=campo, on_page=pagina_firma, box=caja_campo)
         )
 
         meta = signers.PdfSignatureMetadata(
@@ -788,12 +845,12 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
         )
         pdf_signer = signers.PdfSigner(meta, signer=signer, stamp_style=estilo)
         buffer = io.BytesIO()
-        if varios_widgets:
+        if sellos_extra:
 
-            def agregar_widgets(_sesion):
-                _agregar_widgets(writer, campo, paginas, pagina_firma, posicion_de, tipo)
+            def agregar_sellos(_sesion):
+                _agregar_sellos(writer, campo, firmante, paginas, pagina_firma, posicion_de, tipo)
 
-            asyncio.run(_firmar_con_paso_previo(pdf_signer, writer, buffer, agregar_widgets))
+            asyncio.run(_firmar_con_paso_previo(pdf_signer, writer, buffer, agregar_sellos))
         else:
             pdf_signer.sign_pdf(writer, output=buffer)
 

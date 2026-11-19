@@ -110,14 +110,33 @@ certificado es de confianza según los certificados raíz de Windows.
   quita con **Quitar imagen**, no se vuelve a copiar.
 - Las imágenes de `src\` no se incluyen en el ejecutable; cópielas junto a él.
 
+### Sello en todas las páginas
+
+Cada firma es una sola firma criptográfica con un solo campo de firma, en la
+página de firma (la última, salvo que se elija otra): al hacer clic en ese
+sello, el lector muestra el estado de la firma. En las demás páginas el sello
+es una anotación bloqueada (no se puede mover ni borrar sin que se note) con el
+mismo aspecto, cubierta por la firma, y encima lleva un enlace: al hacer clic,
+Acrobat abre una pequeña ventana con el firmante, la fecha y el estado de ESA
+firma, e indica en qué página está su campo. Ese clic usa JavaScript: Acrobat
+puede pedir permiso para ejecutarlo y otros lectores de PDF pueden ignorarlo
+(el sello se ve igual).
+
 ### PDF que ya tienen firmas
 
 Un PDF ya firmado se sella igual que uno sin firmas: con «Sello visible en»
 todas las páginas, la nueva firma pone su sello en cada página (en la posición
 de cada página) y las firmas anteriores siguen siendo válidas. La nueva firma
-se agrega como una revisión con su propio campo de firma, un cambio permitido
-después de firmar; al validar, las firmas anteriores aparecen con
-modificaciones «permitidas».
+se agrega como una revisión con su propio campo de firma y sus sellos, cambios
+permitidos después de firmar; al validar, las firmas anteriores aparecen con
+modificaciones «permitidas» (Acrobat: «la revisión cubierta por esta firma no
+se ha modificado; se han efectuado cambios posteriores»).
+
+> **Documentos firmados «en todas las páginas» con versiones anteriores de la
+> aplicación** (un campo de firma con un sello-widget en cada página): Acrobat
+> marca esa firma como «NO ES VÁLIDA – el documento se ha modificado» en cuanto
+> se agrega otra firma. No agregue firmas a esos documentos: vuelva a firmarlos
+> desde el PDF original con esta versión.
 
 Si el documento está **certificado** (firma de certificación con permisos
 DocMDP), el sello va solo en el campo de la nueva firma, y si la certificación

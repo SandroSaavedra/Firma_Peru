@@ -593,13 +593,17 @@ def test_firmar_ignora_el_tamano_que_envia_la_interfaz(api, pdf_multipagina):
 
 
 def _rects_por_pagina(ruta) -> list[tuple[float, ...]]:
-    """/Rect del widget de firma de cada página (una sola firma con un widget por página)."""
+    """
+    /Rect del sello de cada página (una sola firma): el widget del campo en la
+    página de firma y la anotación /Stamp en las demás (con su /Link encima).
+    """
     with open(ruta, "rb") as f:
         reader = PdfFileReader(f, strict=False)
         rects = []
         for indice in range(int(reader.root["/Pages"]["/Count"])):
             pagina = reader.find_page_for_modification(indice)[0].get_object()
-            (anot,) = [a.get_object() for a in pagina["/Annots"]]
+            anots = [a.get_object() for a in pagina["/Annots"]]
+            (anot,) = [a for a in anots if a["/Subtype"] in ("/Widget", "/Stamp")]
             rects.append(tuple(round(float(v), 2) for v in anot["/Rect"]))
         return rects
 

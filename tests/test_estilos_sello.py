@@ -254,10 +254,18 @@ def test_visto_bueno_sobre_pdf_firmado_mantiene_la_primera(tmp_path, pdf_multipa
     firmas = reader.embedded_signatures
     assert len(firmas) == 2
     assert firmas[1].sig_object["/Reason"] == "Doy V° B°"
-    estado = validate_pdf_signature(firmas[0], ValidationContext(trust_roots=[material_prueba[1]]))
+    # Con la política de la aplicación: el V°B° agrega un campo de firma y sellos
+    # (/Stamp + /Link) en las demás páginas, cambios permitidos de nivel ANNOTATIONS.
+    import validacion
+
+    estado = validate_pdf_signature(
+        firmas[0],
+        ValidationContext(trust_roots=[material_prueba[1]]),
+        diff_policy=validacion.POLITICA_SIN_CERTIFICACION,
+    )
     assert estado.intact and estado.valid
     assert estado.docmdp_ok
-    assert estado.modification_level <= ModificationLevel.FORM_FILLING
+    assert estado.modification_level == ModificationLevel.ANNOTATIONS
 
 
 def test_texto_largo_se_reparte_en_varias_lineas():

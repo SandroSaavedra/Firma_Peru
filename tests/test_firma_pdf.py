@@ -51,6 +51,57 @@ def _ap_normal(widget):
     return widget["/AP"].raw_get("/N")
 
 
+def _anotaciones(reader, indice, subtipo):
+    return [ref.get_object() for ref in _pagina(reader, indice).get("/Annots", []) if ref.get_object().get("/Subtype") == subtipo]
+
+
+def _rect(anot):
+    return tuple(float(v) for v in anot["/Rect"])
+
+
+def _sellos_de(reader, indice, campo):
+    """Anotaciones /Stamp de la página que muestran la apariencia del campo de firma `campo`."""
+    apariencia = _ap_normal(campo).reference
+    return [s for s in _anotaciones(reader, indice, "/Stamp") if _ap_normal(s).reference == apariencia]
+
+
+def _rect_del_sello(reader, indice):
+    """/Rect del sello de la página: el widget del campo de firma o, en las demás páginas, la anotación /Stamp."""
+    (anot,) = [w for w, _ in _widgets_de_firma(reader, indice)] or _anotaciones(reader, indice, "/Stamp")
+    return _rect(anot)
+
+
+def _comprobar_sello_y_enlace(reader, indice, campo, pagina_firma, rect_esperado):
+    """
+    La página tiene un /Stamp bloqueado con la apariencia del campo y, encima, un
+    /Link que al hacer clic muestra (JavaScript de Acrobat) el estado de ESA firma.
+    """
+    (sello,) = _sellos_de(reader, indice, campo)
+    assert int(sello["/F"]) == 4 | 64 | 128 | 512  # imprimible, solo lectura, bloqueado, contenido bloqueado
+    assert sello.raw_get("/P").reference == reader.find_page_for_modification(indice)[0].reference
+    assert _rect(sello) == pytest.approx(rect_esperado, abs=0.01)
+    assert f"página {pagina_firma + 1}" in str(sello["/Contents"])
+    llamada = f'getField("{campo["/T"]}")'  # el estado de la firma de ESTE sello
+    enlaces = [e for e in _anotaciones(reader, indice, "/Link") if llamada in str(e["/A"].get("/JS", ""))]
+    (enlace,) = enlaces
+    assert _rect(enlace) == pytest.approx(rect_esperado, abs=0.01)
+    assert int(enlace["/F"]) == 4
+    assert [int(v) for v in enlace["/Border"]] == [0, 0, 0]
+    accion = enlace["/A"]
+    assert accion["/S"] == "/JavaScript"
+    script = str(accion["/JS"])
+    assert "signatureValidate()" in script and "signatureInfo()" in script and "app.alert(" in script
+    assert f"gina {pagina_firma + 1}" in script  # «página N»: la tilde va como escape JavaScript
+    assert script.isascii()
+    return sello, enlace
+
+
+def _un_solo_widget(campo):
+    """El campo de firma es su propio (único) widget: sin /Kids."""
+    assert "/Kids" not in campo
+    assert campo["/Subtype"] == "/Widget"
+
+
 # --- Posición relativa y tamaño fijo del sello ---------------------------------
 
 
@@ -115,26 +166,26 @@ def test_todas_sella_cada_pagina_y_una_sola_firma_pades(tmp_path, pdf_multipagin
     assert firmas[0].sig_object["/SubFilter"] == "/ETSI.CAdES.detached"
     estado = validate_pdf_signature(firmas[0], ValidationContext(trust_roots=[material_prueba[1]]))
     assert estado.intact and estado.valid
+    assert estado.modification_level in (None, ModificationLevel.NONE)
 
-    # Cada página lleva exactamente un widget del ÚNICO campo firmado (clic = estado de la firma).
+    # El campo firmado tiene UN solo widget, en la página de firma (clic = estado de la firma).
     campo_firmado = firmas[0].sig_field
-    vistas = [A4, CARTA_HORIZONTAL, A4]
-    apariencias = []
-    for indice, vista in enumerate(vistas):
-        (widget, campo), = _widgets_de_firma(reader, indice)
-        assert campo["/T"] == resultado.campo
-        assert campo.raw_get("/V").reference == campo_firmado.raw_get("/V").reference
-        assert widget.raw_get("/P").reference == reader.find_page_for_modification(indice)[0].reference
-        assert int(widget["/F"]) & 4  # imprimible
-        rect = tuple(float(v) for v in widget["/Rect"])
-        assert rect == pytest.approx(firma_pdf.rect_sello(posicion, vista, "firma"), abs=0.01)
-        assert _tamano(rect) == (160, 40)  # mismo tamaño en A4 y en carta
-        apariencias.append(_ap_normal(widget))
-        # el sello ya no se dibuja como contenido de la página
+    _un_solo_widget(campo_firmado)
+    ((widget, campo),) = _widgets_de_firma(reader, 2)
+    assert campo["/T"] == resultado.campo and widget.raw_get("/P").reference == reader.find_page_for_modification(2)[0].reference
+    assert _rect(widget) == pytest.approx(firma_pdf.rect_sello(posicion, A4, "firma"), abs=0.01)
+    assert not _anotaciones(reader, 2, "/Stamp") and not _anotaciones(reader, 2, "/Link")
+    # Las demás páginas: un /Stamp bloqueado con la MISMA apariencia (XObject compartido)
+    # y un /Link del mismo tamaño que lleva a la página de firma.
+    for indice, vista in enumerate([A4, CARTA_HORIZONTAL]):
+        assert _widgets_de_firma(reader, indice) == []
+        esperado = firma_pdf.rect_sello(posicion, vista, "firma")
+        sello, _ = _comprobar_sello_y_enlace(reader, indice, campo_firmado, 2, esperado)
+        assert _tamano(_rect(sello)) == (160, 40)  # mismo tamaño en A4 y en carta
+        assert len(_anotaciones(reader, indice, "/Stamp")) == len(_anotaciones(reader, indice, "/Link")) == 1
+    for indice in range(3):
+        # el sello no se dibuja como contenido de la página
         assert not _tiene_sello_de_contenido(reader, indice)
-    assert len(campo_firmado["/Kids"]) == 3
-    # el sello mide lo mismo en todas las páginas: todas comparten el XObject de apariencia
-    assert apariencias[0].reference == apariencias[1].reference == apariencias[2].reference
 
 
 def test_todas_segunda_firma_mantiene_valida_la_primera(tmp_path, pdf_multipagina, firmante, material_prueba):
@@ -150,19 +201,34 @@ def test_todas_segunda_firma_mantiene_valida_la_primera(tmp_path, pdf_multipagin
     reader = _leer(segunda)
     firmas = reader.embedded_signatures
     assert len(firmas) == 2
-    contexto = ValidationContext(trust_roots=[material_prueba[1]])
+    _comprobar_firmas_validas(segunda, material_prueba)
+    # el visto bueno también sella cada página: su campo en la última y un /Stamp en las demás
     for firma in firmas:
-        estado = validate_pdf_signature(firma, contexto)
-        assert estado.intact and estado.valid
-        assert estado.docmdp_ok
-        assert estado.modification_level <= ModificationLevel.FORM_FILLING
-    # el visto bueno también sella cada página: un widget de cada firma por página
-    for indice, vista in enumerate([A4, CARTA_HORIZONTAL, A4]):
-        nuevos = [w for w, c in _widgets_de_firma(reader, indice) if c["/T"] == resultado.campo]
-        assert len(_widgets_de_firma(reader, indice)) == 2
-        assert len(nuevos) == 1
-        assert _tamano(tuple(float(v) for v in nuevos[0]["/Rect"])) == firma_pdf.TAMANOS_SELLO["visto_bueno"]
-    assert len(firmas[1].sig_field["/Kids"]) == 3
+        _un_solo_widget(firma.sig_field)
+    assert sorted(c["/T"] for _, c in _widgets_de_firma(reader, 2)) == ["FirmaDNIe", resultado.campo]
+    for indice, vista in enumerate([A4, CARTA_HORIZONTAL]):
+        assert _widgets_de_firma(reader, indice) == []
+        assert len(_anotaciones(reader, indice, "/Stamp")) == 2
+        esperado = firma_pdf.rect_sello(firma_pdf.posicion_predeterminada("visto_bueno"), vista, "visto_bueno")
+        sello, _ = _comprobar_sello_y_enlace(reader, indice, firmas[1].sig_field, 2, esperado)
+        assert _tamano(_rect(sello)) == firma_pdf.TAMANOS_SELLO["visto_bueno"]
+
+
+def _comprobar_firmas_validas(ruta, material_prueba):
+    """
+    Con la validación de la aplicación (`validacion.validar_pdf`): todas las firmas
+    íntegras y válidas; las anteriores con cambios permitidos y la última sin cambios.
+    """
+    import validacion
+
+    resultado = validacion.validar_pdf(ruta, permitir_red=False, raices_extra=[material_prueba[1]])
+    for firma in resultado[:-1]:
+        assert firma["integridad"] == "intacta" and firma["criptografia_valida"]
+        assert firma["modificaciones"] == "permitidas", firma
+        assert firma["docmdp_ok"] is True
+        assert firma["estado"] == "valida"
+    assert resultado[-1]["modificaciones"] == "ninguna" and resultado[-1]["estado"] == "valida"
+    return resultado
 
 
 def test_ultima_solo_pone_el_campo_de_firma(tmp_path, pdf_multipagina, firmante):
@@ -188,8 +254,9 @@ def test_campo_en_otra_pagina_usa_su_vista(tmp_path, pdf_multipagina, firmante):
     reader = _leer(salida)
     rect = firma_pdf.rect_sello
     assert _rect_del_campo(reader, 1) == pytest.approx(rect(posicion, CARTA_HORIZONTAL, "firma"), abs=0.01)
-    assert _rect_del_campo(reader, 0) == pytest.approx(rect(posicion, A4, "firma"), abs=0.01)
-    assert _rect_del_campo(reader, 2) == pytest.approx(rect(posicion, A4, "firma"), abs=0.01)
+    campo = reader.embedded_signatures[0].sig_field
+    _comprobar_sello_y_enlace(reader, 0, campo, 1, rect(posicion, A4, "firma"))
+    _comprobar_sello_y_enlace(reader, 2, campo, 1, rect(posicion, A4, "firma"))
     assert not _tiene_sello_de_contenido(reader, 0)
 
 
@@ -227,25 +294,20 @@ def test_segunda_firma_no_invalida_la_primera(tmp_path, pdf_multipagina, firmant
     reader = _leer(segunda)
     firmas = reader.embedded_signatures
     assert len(firmas) == 2
-    contexto = ValidationContext(trust_roots=[material_prueba[1]])
-    primera_estado = validate_pdf_signature(firmas[0], contexto)
-    assert primera_estado.intact and primera_estado.valid
-    assert primera_estado.docmdp_ok
-    assert primera_estado.modification_level == ModificationLevel.FORM_FILLING  # solo la nueva firma
-    segunda_estado = validate_pdf_signature(firmas[1], contexto)
-    assert segunda_estado.intact and segunda_estado.valid
-    assert segunda_estado.modification_level in (None, ModificationLevel.NONE)
+    primera_v, segunda_v = _comprobar_firmas_validas(segunda, material_prueba)
+    # Después de la primera solo se agregaron un campo de firma y anotaciones (sellos).
+    assert primera_v["nivel_modificacion"] == "ANNOTATIONS"
+    assert segunda_v["nivel_modificacion"] in (None, "NONE")
 
-    # Cada página tiene un widget de cada firma; el nuevo campo comparte su apariencia.
-    assert len(firmas[1].sig_field["/Kids"]) == 3
-    apariencias = set()
-    for indice in range(3):
-        widgets = _widgets_de_firma(reader, indice)
-        assert sorted(c["/T"] for _, c in widgets) == ["FirmaDNIe", resultado.campo]
-        (nuevo,) = [w for w, c in widgets if c["/T"] == resultado.campo]
-        assert int(nuevo["/F"]) & 4
-        apariencias.add(_ap_normal(nuevo).reference)
-    assert len(apariencias) == 1
+    # Cada firma: un solo widget en la página de firma y un sello + enlace propio en las demás.
+    nuevo = firmas[1].sig_field
+    _un_solo_widget(nuevo)
+    assert sorted(c["/T"] for _, c in _widgets_de_firma(reader, 2)) == ["FirmaDNIe", resultado.campo]
+    for indice, vista in enumerate([A4, CARTA_HORIZONTAL]):
+        esperado = firma_pdf.rect_sello(firma_pdf.posicion_predeterminada("firma"), vista, "firma")
+        for firma in firmas:
+            _comprobar_sello_y_enlace(reader, indice, firma.sig_field, 2, esperado)
+        assert len(_anotaciones(reader, indice, "/Stamp")) == len(_anotaciones(reader, indice, "/Link")) == 2
 
 
 def test_tercera_firma_mantiene_validas_las_anteriores(tmp_path, pdf_multipagina, firmante, material_prueba):
@@ -257,13 +319,14 @@ def test_tercera_firma_mantiene_validas_las_anteriores(tmp_path, pdf_multipagina
     reader = _leer(rutas[-1])
     firmas = reader.embedded_signatures
     assert len(firmas) == 3
-    contexto = ValidationContext(trust_roots=[material_prueba[1]])
+    _comprobar_firmas_validas(rutas[-1], material_prueba)
     for firma in firmas:
-        estado = validate_pdf_signature(firma, contexto)
-        assert estado.intact and estado.valid and estado.docmdp_ok
-        assert estado.modification_level <= ModificationLevel.FORM_FILLING
-    for indice in range(3):
-        assert len(_widgets_de_firma(reader, indice)) == 3
+        _un_solo_widget(firma.sig_field)
+    assert len(_widgets_de_firma(reader, 2)) == 3
+    for indice in range(2):
+        assert _widgets_de_firma(reader, indice) == []
+        for firma in firmas:
+            assert len(_sellos_de(reader, indice, firma.sig_field)) == 1
 
 
 def test_ultima_en_pdf_ya_firmado_solo_pone_el_campo(tmp_path, pdf_multipagina, firmante):
@@ -274,7 +337,8 @@ def test_ultima_en_pdf_ya_firmado_solo_pone_el_campo(tmp_path, pdf_multipagina, 
 
     assert resultado.paginas_selladas == [2]
     reader = _leer(segunda)
-    assert len(_widgets_de_firma(reader, 0)) == 1
+    assert _widgets_de_firma(reader, 0) == []
+    assert len(_anotaciones(reader, 0, "/Stamp")) == 1  # solo el sello de la primera firma
     assert len(_widgets_de_firma(reader, 2)) == 2
 
 
@@ -293,6 +357,8 @@ def test_documento_certificado_con_cambios_permitidos_solo_pone_el_campo(
     for indice, esperados in enumerate([0, 0, 1]):
         nuevos = [w for w, c in _widgets_de_firma(reader, indice) if c["/T"] == resultado.campo]
         assert len(nuevos) == esperados
+        # sin anotaciones extra: DocMDP 2 no permite anotaciones
+        assert not _anotaciones(reader, indice, "/Stamp") and not _anotaciones(reader, indice, "/Link")
 
 
 def _certificar(tmp_path, entrada, firmante, permiso):
@@ -341,8 +407,7 @@ def test_sello_tiene_tamano_fijo_en_paginas_de_distinto_tamano(tmp_path, firmant
     firmar_pdf(entrada, salida, firmante, "PRUEBA", OpcionesFirma(tipo=tipo, paginas="todas"))
     reader = _leer(salida)
     for indice in range(3):
-        (widget, _), = _widgets_de_firma(reader, indice)
-        assert _tamano(tuple(float(v) for v in widget["/Rect"])) == firma_pdf.TAMANOS_SELLO[tipo]
+        assert _tamano(_rect_del_sello(reader, indice)) == firma_pdf.TAMANOS_SELLO[tipo]
 
 
 # --- Posición propia por página -----------------------------------------------
@@ -358,7 +423,7 @@ def test_posicion_propia_de_una_pagina_solo_cambia_esa_pagina(tmp_path, pdf_mult
     assert resultado.paginas_selladas == [0, 1, 2]
     reader = _leer(salida)
     firmas = reader.embedded_signatures
-    assert len(firmas) == 1  # una sola firma: los sellos siguen siendo widgets del mismo campo
+    assert len(firmas) == 1  # una sola firma: los sellos de las demás páginas son anotaciones de esa firma
     estado = validate_pdf_signature(firmas[0], ValidationContext(trust_roots=[material_prueba[1]]))
     assert estado.intact and estado.valid
     assert estado.modification_level in (None, ModificationLevel.NONE)
@@ -368,15 +433,14 @@ def test_posicion_propia_de_una_pagina_solo_cambia_esa_pagina(tmp_path, pdf_mult
         firma_pdf.rect_sello(propia, CARTA_HORIZONTAL, "firma"),
         firma_pdf.rect_sello(documento, A4, "firma"),
     ]
-    apariencias = []
     for indice, esperado in enumerate(esperados):
-        (widget, _), = _widgets_de_firma(reader, indice)
-        rect = tuple(float(v) for v in widget["/Rect"])
+        rect = _rect_del_sello(reader, indice)
         assert rect == pytest.approx(esperado, abs=0.01)
         assert _tamano(rect) == (160, 40)
-        apariencias.append(_ap_normal(widget).reference)
     # El sello mide lo mismo en cada página: la apariencia se sigue compartiendo.
-    assert len(set(apariencias)) == 1
+    campo = firmas[0].sig_field
+    for indice in range(2):
+        _comprobar_sello_y_enlace(reader, indice, campo, 2, esperados[indice])
 
 
 @pytest.mark.parametrize("paginas", ["todas", "ultima"])
@@ -392,7 +456,7 @@ def test_pagina_del_campo_usa_su_posicion_propia(tmp_path, pdf_multipagina, firm
     rect = firma_pdf.rect_sello
     assert _rect_del_campo(reader, 2) == pytest.approx(rect(propia, A4, "firma"), abs=0.01)
     if paginas == "todas":
-        assert _rect_del_campo(reader, 0) == pytest.approx(rect(documento, A4, "firma"), abs=0.01)
+        assert _rect_del_sello(reader, 0) == pytest.approx(rect(documento, A4, "firma"), abs=0.01)
 
 
 def test_posiciones_propias_en_pdf_ya_firmado_se_respetan(tmp_path, pdf_multipagina, firmante, material_prueba):
@@ -409,17 +473,13 @@ def test_posiciones_propias_en_pdf_ya_firmado_se_respetan(tmp_path, pdf_multipag
     assert resultado.pagina_firma == 0 and resultado.paginas_selladas == [0, 1, 2]
     reader = _leer(segunda)
     vistas = [A4, CARTA_HORIZONTAL, A4]
-    for indice, vista in enumerate(vistas):
-        nuevos = [w for w, c in _widgets_de_firma(reader, indice) if c["/T"] == resultado.campo]
-        assert len(nuevos) == 1
-        rect = tuple(float(v) for v in nuevos[0]["/Rect"])
+    campo = reader.embedded_signatures[1].sig_field
+    (widget,) = [w for w, c in _widgets_de_firma(reader, 0) if c["/T"] == resultado.campo]
+    assert _rect(widget) == pytest.approx(firma_pdf.rect_sello(propias[0], A4, "firma"), abs=0.01)
+    for indice, vista in enumerate(vistas[1:], start=1):
         esperado = firma_pdf.rect_sello(propias.get(indice, documento), vista, "firma")
-        assert rect == pytest.approx(esperado, abs=0.01)
-    contexto = ValidationContext(trust_roots=[material_prueba[1]])
-    for firma in reader.embedded_signatures:
-        estado = validate_pdf_signature(firma, contexto)
-        assert estado.intact and estado.valid and estado.docmdp_ok
-        assert estado.modification_level <= ModificationLevel.FORM_FILLING
+        _comprobar_sello_y_enlace(reader, indice, campo, 0, esperado)
+    _comprobar_firmas_validas(segunda, material_prueba)
 
 
 @pytest.mark.parametrize(

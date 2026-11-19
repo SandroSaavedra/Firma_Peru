@@ -5,8 +5,9 @@ páginas, con una sola firma criptográfica (PAdES).
 Cómo funciona:
   - El DNIe se usa a través de Windows CNG (minidriver de RENIEC), no PKCS#11.
     Windows pide el PIN con su propio cuadro de diálogo; el script no lo ve.
-  - El campo de firma tiene un widget (el sello) en cada página; el de la
-    última página es el principal. Todos comparten el mismo aspecto.
+  - El campo de firma (un solo widget) va en la última página; cada una de las
+    demás lleva una anotación de sello bloqueada con el mismo aspecto y, encima,
+    un enlace que en Acrobat muestra el estado de esa firma.
   - Se hace UNA sola firma criptográfica, que cubre el documento completo
     (incluidos los sellos).
   - Si el PDF ya tiene firmas, la nueva firma se sella igual en todas las

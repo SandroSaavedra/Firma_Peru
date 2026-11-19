@@ -435,13 +435,14 @@ def test_ajuste_por_documento_solo_se_aplica_a_ese(api, cng, tmp_path):
 
 
 def _rects_por_pagina(ruta) -> list[tuple[float, ...]]:
-    """/Rect del widget de firma de cada página."""
+    """/Rect del sello de cada página: widget del campo en la página de firma, /Stamp en las demás."""
     with open(ruta, "rb") as f:
         reader = PdfFileReader(f, strict=False)
         rects = []
         for indice in range(int(reader.root["/Pages"]["/Count"])):
             pagina = reader.find_page_for_modification(indice)[0].get_object()
-            (anot,) = [a.get_object() for a in pagina["/Annots"]]
+            anots = [a.get_object() for a in pagina["/Annots"]]
+            (anot,) = [a for a in anots if a["/Subtype"] in ("/Widget", "/Stamp")]
             rects.append(tuple(round(float(v), 2) for v in anot["/Rect"]))
         return rects
 
