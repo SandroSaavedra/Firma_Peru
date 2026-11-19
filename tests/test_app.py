@@ -18,10 +18,20 @@ import dnie_pkcs11
 LOGO_INICIAL_ORIGINAL = app.LOGO_INICIAL
 
 
+def _hechos(*tarjetas):
+    """Hechos de WinSCard con un lector por tarjeta insertada (None = nombre desconocido)."""
+    from diagnostico_dnie import SCARD_STATE_PRESENT, Lector
+
+    lectores = [Lector(f"Lector {i}", SCARD_STATE_PRESENT, b"\x3b", t) for i, t in enumerate(tarjetas)]
+    return {"error_lectores": None, "lectores": lectores}
+
+
 @pytest.fixture(autouse=True)
 def sin_pkcs11(monkeypatch):
     """Sin el módulo PKCS#11 de IDEMIA: las pruebas nunca cargan la DLL real."""
     monkeypatch.setattr(dnie_pkcs11, "ruta_modulo", lambda: None)
+    # Ni WinSCard real: por defecto el lector tiene un DNIe 3.0 («Peru eID Device»).
+    monkeypatch.setattr(app, "_recolectar_hechos", lambda: _hechos("Peru eID Device"))
 
 
 @pytest.fixture

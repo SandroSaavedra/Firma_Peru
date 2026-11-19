@@ -40,10 +40,20 @@ class Cng:
         self.despues = {}  # n.º de intento -> función a ejecutar tras firmar
 
 
+def _hechos(*tarjetas):
+    """Hechos de WinSCard con un lector por tarjeta insertada (None = nombre desconocido)."""
+    from diagnostico_dnie import SCARD_STATE_PRESENT, Lector
+
+    lectores = [Lector(f"Lector {i}", SCARD_STATE_PRESENT, b"\x3b", t) for i, t in enumerate(tarjetas)]
+    return {"error_lectores": None, "lectores": lectores}
+
+
 @pytest.fixture(autouse=True)
 def sin_pkcs11(monkeypatch):
     """Sin el módulo PKCS#11 de IDEMIA: las pruebas nunca cargan la DLL real."""
     monkeypatch.setattr(dnie_pkcs11, "ruta_modulo", lambda: None)
+    # Ni WinSCard real: por defecto el lector tiene un DNIe 3.0 («Peru eID Device»).
+    monkeypatch.setattr(app, "_recolectar_hechos", lambda: _hechos("Peru eID Device"))
 
 
 @pytest.fixture
@@ -807,3 +817,34 @@ def test_sin_pin_de_la_aplicacion_no_se_prueba_pkcs11(api, cng, dnie_v3, tmp_pat
     api.abrir_ruta(str(ruta))
     assert api.firmar({"caja": CAJA, "paginas": "cada_pagina"})["ok"]
     assert dnie_v3.cargas == 0 and cng.silenciosas == [False, False]
+
+def test_dnie_v2_no_consulta_el_modulo_de_idemia(api, cng, dnie_v3, tmp_path, monkeypatch, caplog):
+    """Un DNIe V1/V2 (CJCOP3) va directo a CNG: no se pierden segundos cargando IDEMIA."""
+    caplog.set_level("INFO")
+    monkeypatch.setattr(app, "_recolectar_hechos", lambda: _hechos("CJCOP3"))
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=2)
+    api.abrir_ruta(str(ruta))
+    assert api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})["ok"]
+    assert dnie_v3.cargas == 0 and cng.firmas  # CNG firma, IDEMIA ni se carga
+    assert "no es un DNIe 3.0" in caplog.text
+
+
+def test_modelo_de_tarjeta_desconocido_prueba_pkcs11(api, cng, dnie_v3, tmp_path, monkeypatch):
+    """Si WinSCard no dice el modelo, se prueba IDEMIA igual (el DNIe 3.0 no debe perder el PIN único)."""
+    monkeypatch.setattr(app, "_recolectar_hechos", lambda: _hechos(None))
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=2)
+    api.abrir_ruta(str(ruta))
+    assert api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})["ok"]
+    assert dnie_v3.cargas > 0 and cng.firmas == []  # firmó por PKCS#11
+
+
+def test_si_winscard_falla_se_prueba_pkcs11(api, cng, dnie_v3, tmp_path, monkeypatch):
+    def _falla():
+        raise OSError("winscard")
+
+    monkeypatch.setattr(app, "_recolectar_hechos", _falla)
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=2)
+    api.abrir_ruta(str(ruta))
+    assert api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})["ok"]
+    assert dnie_v3.cargas > 0
+

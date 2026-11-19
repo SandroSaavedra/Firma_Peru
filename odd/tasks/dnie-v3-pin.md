@@ -97,3 +97,8 @@ DNIe V1/V2 (CJCOP3, ciamd.dll) is not affected: one PIN works there.
   - Commit `cc76855`.
   - RED: 2 failed. GREEN: 326 passed. 1.2.4 rebuilt (its test run: 326 passed).
 - 2026-11-19: T2 done (route: delegated writer). 369 passed; 1.2.5 installer built. Field check with a V3 card pending: one PIN for all pages through `idplug-pkcs11.dll`; the log line «Firma por PKCS#11 (IDEMIA)» confirms the path.
+- 2026-11-19 (coordinator): PKCS#11 lookup only when the card can be a DNIe 3.0.
+  - Before this change, the smoke test with the real V2 DNIe showed `CKR_TOKEN_NOT_RECOGNIZED`, a CNG fallback, and a 6.6 s IDEMIA lookup on every signing.
+  - `app._puede_ser_dnie_v3()` checks the WinSCard card names and skips PKCS#11 only when every inserted card is known and none is «Peru eID». If the names are unknown or the query fails, PKCS#11 is tried.
+  - With the real V2 card: «no es un DNIe 3.0 ('CJCOP3')» in 0.01 s.
+  - RED: errors (no `_recolectar_hechos`). GREEN: 372 passed.

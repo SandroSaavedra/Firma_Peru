@@ -40,6 +40,7 @@ from pathlib import Path
 
 import webview
 
+import diagnostico_dnie
 import dnie_pkcs11
 from diagnostico_dnie import Certificado, diagnosticar
 from dnie_cng import ErrorCNG, FirmanteCNG, SesionFirma, describir_llave, elegir_llave_de_firma
@@ -1328,7 +1329,7 @@ class Api:
         no acepta el PIN en silencio. Un PIN rechazado por PKCS#11 lanza su
         error y no se prueba CNG: sería otro intento del PIN.
         """
-        if pin:
+        if pin and _puede_ser_dnie_v3():
             sesion = dnie_pkcs11.abrir_sesion(llave, pin)
             if sesion is not None:
                 logger.info("Firma por PKCS#11 (IDEMIA): un solo PIN para todas las páginas.")
@@ -1604,6 +1605,37 @@ class Api:
             logger.warning("No se pudo abrir la carpeta del registro %s: %s", carpeta, e)
             return {"ok": False, "mensaje": f"No se pudo abrir la carpeta del registro ({carpeta})."}
         return {"ok": True}
+
+
+# Punto de prueba: las pruebas reemplazan la consulta a WinSCard.
+_recolectar_hechos = diagnostico_dnie.recolectar_hechos
+
+# Nombre que registra el driver V3.0 de RENIEC (IDEMIA IDplug) para el ATR del DNIe 3.0.
+TARJETA_DNIE_V3 = "peru eid"
+
+
+def _puede_ser_dnie_v3() -> bool:
+    """
+    False solo si WinSCard dice con certeza que ninguna tarjeta insertada es un
+    DNIe 3.0 (por ejemplo, un DNIe V1/V2 «CJCOP3»): así no se pierden segundos
+    cargando el módulo de IDEMIA, que no reconoce esos DNIe. Si el modelo es
+    desconocido o la consulta falla, True: se prueba PKCS#11 como siempre.
+    """
+    try:
+        lectores = _recolectar_hechos().get("lectores")
+    except Exception:  # noqa: BLE001 - ante la duda se prueba PKCS#11
+        logger.debug("No se pudo consultar el modelo de la tarjeta", exc_info=True)
+        return True
+    tarjetas = [l.tarjeta for l in lectores or [] if l.estado & diagnostico_dnie.SCARD_STATE_PRESENT]
+    if not tarjetas or any(t is None for t in tarjetas):
+        return True
+    if any(TARJETA_DNIE_V3 in t.lower() for t in tarjetas):
+        return True
+    logger.info(
+        "PKCS#11: la tarjeta insertada no es un DNIe 3.0 (%s); se usa CNG sin cargar el módulo de IDEMIA.",
+        ", ".join(repr(t) for t in tarjetas),
+    )
+    return False
 
 
 def _al_iniciar(ventana, api: Api):
