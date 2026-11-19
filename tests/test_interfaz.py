@@ -136,3 +136,63 @@ def test_la_interfaz_envia_eventos_al_registro_sin_romperse():
     # Cada diálogo de error queda registrado con su mensaje.
     dialogo = re.search(r"function mostrarDialogo\(.*?\) \{(.*?)\n\}", js, re.S).group(1)
     assert re.search(r'tipo === "error"\) registrar\("error"', dialogo)
+
+
+# --- firma real en cada página (un solo PIN) ---------------------------------
+
+
+def _funcion(js: str, firma: str) -> str:
+    cuerpo = re.search(rf"{re.escape(firma)} \{{(.*?)\n\}}", js, re.S)
+    assert cuerpo, f"falta {firma}"
+    return cuerpo.group(1)
+
+
+def test_tercera_opcion_firma_real_en_cada_pagina():
+    html = _html()
+    assert re.search(
+        r'<input type="radio" name="paginas" value="cada_pagina"[^>]*><span>Firma real en cada página</span>', html
+    )
+    assert "Una firma digital por página; pide el PIN una sola vez." in html
+    js = _js()
+    assert '"cada_pagina"' in js
+    # el aviso corto se muestra solo con esa opción
+    assert '$("txt-paginas-ayuda")' in js and 'id="txt-paginas-ayuda"' in html
+
+
+def test_dialogo_del_pin_es_un_campo_de_contrasena():
+    html, js = _html(), _js()
+    campo = re.search(r'<input[^>]*\bid="inp-pin"[^>]*>', html)
+    assert campo, "falta el campo del PIN"
+    assert 'type="password"' in campo.group(0) and 'autocomplete="off"' in campo.group(0)
+    assert {"dialogo-pin", "inp-pin"} <= _ids_html()
+    # Enter confirma; Cancelar / Escape cierran; el campo se vacía siempre.
+    assert re.search(r'el\.inpPin\.addEventListener\(\s*"keydown".{0,200}?"Enter".{0,200}?aceptarPin\(\)', js, re.S)
+    assert 'el.inpPin.value = ""' in _funcion(js, "function cerrarDialogo()")
+    assert 'el.inpPin.value = ""' in _funcion(js, "function aceptarPin()")
+
+
+def test_el_pin_no_se_guarda_en_la_interfaz():
+    js = _js()
+    assert not re.search(r"estado\.pin\b", js)
+    assert not re.search(r"guardarPreferencia\([^)]*pin", js, re.I)
+    assert not re.search(r"registrar\([^)]*\bpin\b[^)]*\)", _funcion(js, "async function firmar()"))
+    # el PIN solo viaja dentro de la llamada a Python, con «cada_pagina»
+    assert re.search(r'llamar\("firmar", pin === null \? opciones : \{ \.\.\.opciones, pin \}\)', js)
+    assert re.search(r'llamar\("firmar_lote", pin === null \? opciones : \{ \.\.\.opciones, pin \}\)', js)
+
+
+def test_el_pin_se_pide_una_vez_por_documento_o_por_lote():
+    js = _js()
+    for firma in ("async function firmar()", "async function firmarLote()"):
+        cuerpo = _funcion(js, firma)
+        assert cuerpo.count("pedirPin(") == 1, firma
+        assert '"cada_pagina"' in cuerpo, firma
+
+
+def test_avance_por_pagina_con_cancelar():
+    js = _js()
+    assert 'evento.evento === "paginas"' in _funcion(js, "function progresoLote(evento)")
+    assert "Firmando página ${" in js
+    dialogo = _funcion(js, "function mostrarDialogoLote()")
+    assert "Cancelar" in dialogo and "cancelarLote" in dialogo
+    assert 'llamar("cancelar_lote")' in js

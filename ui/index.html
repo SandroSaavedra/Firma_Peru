@@ -226,7 +226,9 @@
           <div class="segmentado">
             <label><input type="radio" name="paginas" value="todas" checked><span>Todas las páginas</span></label>
             <label><input type="radio" name="paginas" value="ultima"><span>Solo la página de firma</span></label>
+            <label class="segmento-ancho"><input type="radio" name="paginas" value="cada_pagina"><span>Firma real en cada página</span></label>
           </div>
+          <p class="ayuda" id="txt-paginas-ayuda" hidden>Una firma digital por página; pide el PIN una sola vez.</p>
         </fieldset>
 
         <fieldset class="campo">
@@ -300,11 +302,16 @@
         <svg class="ic ic-ok"><use href="#i-ok"/></svg>
         <svg class="ic ic-error"><use href="#i-error"/></svg>
         <svg class="ic ic-alerta"><use href="#i-alerta"/></svg>
+        <svg class="ic ic-candado"><use href="#i-candado"/></svg>
       </div>
       <h2 id="dialogo-titulo"></h2>
       <p id="dialogo-texto"></p>
       <div class="progreso" id="dialogo-progreso" role="progressbar" aria-label="Avance de la firma"
            aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span id="dialogo-progreso-valor"></span></div>
+      <div class="dialogo-pin" id="dialogo-pin" hidden>
+        <label class="etiqueta" for="inp-pin">PIN del DNIe</label>
+        <input id="inp-pin" type="password" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="32">
+      </div>
       <p class="dialogo-nota" id="dialogo-nota" hidden></p>
       <ul class="dialogo-lista" id="dialogo-lista" hidden></ul>
       <p class="dialogo-ruta" id="dialogo-ruta" hidden></p>

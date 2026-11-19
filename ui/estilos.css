@@ -406,6 +406,8 @@ kbd { font: 600 11px var(--fuente); background: var(--superficie); border: 1px s
 .segmentado input:checked + span { background: var(--superficie); color: var(--texto); box-shadow: var(--sombra-1); }
 .segmentado input:focus-visible + span { box-shadow: var(--foco); }
 .segmentado input:disabled + span { opacity: .45; cursor: not-allowed; }
+/* «Firma real en cada página»: tercera opción, a lo ancho debajo de las otras dos. */
+.segmentado .segmento-ancho { grid-column: 1 / -1; }
 
 .btn-chico { height: 32px; padding: 0 12px; font-size: 13px; }
 .enlace-peligro { color: var(--peligro); }
@@ -536,6 +538,15 @@ kbd { font: 600 11px var(--fuente); background: var(--superficie); border: 1px s
 .dialogo[data-tipo="error"] .dialogo-icono { background: var(--peligro-suave); color: var(--peligro); }
 .dialogo[data-tipo="pregunta"] .dialogo-icono { background: var(--aviso-suave); color: var(--aviso); }
 .dialogo[data-tipo="ok"] .ic-ok, .dialogo[data-tipo="error"] .ic-error, .dialogo[data-tipo="pregunta"] .ic-alerta { display: block; }
+.dialogo[data-tipo="clave"] .ic-candado { display: block; }
+/* PIN del DNIe pedido por la aplicación (firma real en cada página). */
+.dialogo-pin { margin: 16px auto 0; max-width: 240px; text-align: left; }
+.dialogo-pin .etiqueta { display: block; margin-bottom: 6px; }
+.dialogo-pin input {
+  width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--borde-fuerte); border-radius: var(--radio-s);
+  background: var(--superficie); color: var(--texto); font-size: 18px; letter-spacing: .3em; text-align: center;
+}
+.dialogo-pin input:focus { border-color: var(--acento); box-shadow: var(--foco); outline: none; }
 .dialogo:not([data-tipo="pin"]) .girando { display: none; }
 .progreso { height: 8px; margin: 18px 0 0; border-radius: 999px; background: var(--superficie-3); overflow: hidden; }
 .progreso span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--acento); transition: width .25s ease; }

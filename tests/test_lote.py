@@ -33,6 +33,7 @@ class Cng:
         self.liberados = []
         self.ventanas = []
         self.firmas = []  # handle usado en cada intento de firma
+        self.silenciosas = []  # si cada intento fue sin el cuadro de Windows (PIN provisto)
         self.fallos = {}  # n.º de intento (1, 2, ...) -> excepción a lanzar
         self.despues = {}  # n.º de intento -> función a ejecutar tras firmar
 
@@ -54,8 +55,9 @@ def cng(monkeypatch, material_prueba):
         estado.ventanas.append((int(handle), nombre))
         return 0
 
-    def _firmar(firmante, handle, resumen, algoritmo):
+    def _firmar(firmante, handle, resumen, algoritmo, silencioso=False):
         estado.firmas.append(int(handle))
+        estado.silenciosas.append(silencioso)
         intento = len(estado.firmas)
         if intento in estado.fallos:
             raise estado.fallos[intento]
@@ -517,3 +519,69 @@ def test_lote_usa_el_logo_inicial_aunque_haya_uno_guardado(api, cng, tmp_path, m
     r = api.firmar_lote({"caja": CAJA, "tipo": "firma"})
     assert r["ok"] and len(r["firmados"]) == 2, r
     assert colores == [azul, azul]
+
+
+# --- firma real en cada página: un solo PIN para todo el lote -------------------
+
+PIN = "975310"
+
+
+def test_lote_cada_pagina_usa_un_solo_pin_y_una_sesion(api, cng, tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "INTERVALO_AVANCE_PAGINAS", 0)
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf", paginas=3)
+    api.agregar_rutas([str(r) for r in rutas])
+    opciones = {"caja": CAJA, "paginas": "cada_pagina", "pin": PIN}
+
+    r = api.firmar_lote(opciones)
+    assert r["ok"] and len(r["firmados"]) == 2 and r["detenido"] is None, r
+    assert "pin" not in opciones
+    assert (cng.proveedores, cng.llaves) == (1, 1)
+    assert len(cng.firmas) == 6  # 3 páginas x 2 documentos, con la misma llave abierta
+    assert cng.silenciosas == [True] * 6  # sin el cuadro de Windows
+    assert [n for _, n in cng.ventanas].count("SmartCardPin") == 6  # el PIN se entrega antes de cada firma
+    assert PIN not in json.dumps(r)
+    for f in r["firmados"]:
+        v = validar_pdf(f["salida"], permitir_red=False)
+        assert len(v) == 3 and all(x["integridad"] == "intacta" for x in v)
+
+    eventos = api._ventana.eventos()
+    assert eventos[0] == {"evento": "inicio", "total": 2, "pin_provisto": True}
+    paginas = [(e["indice"], e["hechas"], e["total"]) for e in eventos if e["evento"] == "paginas"]
+    assert paginas == [(1, 0, 3), (1, 1, 3), (1, 2, 3), (1, 3, 3), (2, 0, 3), (2, 1, 3), (2, 2, 3), (2, 3, 3)]
+    assert all(PIN not in codigo for codigo in api._ventana.js)
+
+
+def test_lote_cada_pagina_cancelar_a_mitad_de_un_documento(api, cng, tmp_path):
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf", paginas=3)
+    api.agregar_rutas([str(r) for r in rutas])
+    cng.despues[2] = api.cancelar_lote  # «Cancelar» en la 2.ª página del primer documento
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"] and r["detenido"] == "cancelado" and r["mensaje"] == app.MENSAJE_CANCELADO_LOTE
+    assert _estados(api) == [("uno.pdf", "pendiente"), ("dos.pdf", "pendiente")]
+    assert r["firmados"] == [] and r["errores"] == []
+    assert len(cng.firmas) == 2
+    assert not (tmp_path / "uno_firmado.pdf").exists()  # sin archivo a medias
+
+
+@pytest.mark.parametrize("codigo", [0x8010006B, 0x8010006C])
+def test_lote_cada_pagina_pin_incorrecto_no_reintenta(api, cng, tmp_path, codigo):
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf", paginas=3)
+    api.agregar_rutas([str(r) for r in rutas])
+    cng.fallos[1] = dnie_cng.ErrorCNG(f"NCryptSignHash falló (0x{codigo:08X}) PIN", codigo=codigo)
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["detenido"] == "tarjeta" and r["mensaje"] == app._MENSAJES_CNG[codigo]
+    assert len(cng.firmas) == 1  # un solo intento con ese PIN
+    assert _estados(api) == [("uno.pdf", "error"), ("dos.pdf", "pendiente")]
+    assert not (tmp_path / "uno_firmado.pdf").exists()
+
+
+def test_lote_sin_cada_pagina_ignora_el_pin(api, cng, tmp_path):
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf")
+    api.agregar_rutas([str(r) for r in rutas])
+    r = api.firmar_lote({"caja": CAJA, "paginas": "todas", "pin": PIN})
+    assert r["ok"] and len(r["firmados"]) == 2
+    assert cng.silenciosas == [False, False]
+    assert "SmartCardPin" not in [n for _, n in cng.ventanas]
+    assert api._ventana.eventos()[0]["pin_provisto"] is False

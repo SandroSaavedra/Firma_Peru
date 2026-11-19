@@ -788,7 +788,7 @@ def test_lote_con_error_registra_clase_y_codigo(api, pdf_multipagina, monkeypatc
 class _SesionFalsa:
     """SesionFirma sin CNG: entrega el firmante de prueba (ver fixture `firmante`)."""
 
-    def __init__(self, llave, hwnd=None):
+    def __init__(self, llave, hwnd=None, pin=None):
         self.firmante = app.FirmanteCNG(llave, hwnd=hwnd)
         self.firmas = 0
 
@@ -841,3 +841,140 @@ def test_abrir_carpeta_registros(monkeypatch, tmp_path):
     monkeypatch.setattr(app.os, "startfile", _falla, raising=False)
     r = app.Api().abrir_carpeta_registros()
     assert r["ok"] is False and "registro" in r["mensaje"]
+
+
+# --- firma real en cada página (un solo PIN) ---------------------------------
+
+PIN = "975310"
+
+
+class _SesionConPin:
+    """SesionFirma falsa que registra si recibió un PIN (sin guardarlo como texto)."""
+
+    creadas = []
+
+    def __init__(self, llave, hwnd=None, pin=None):
+        self.firmante = app.FirmanteCNG(llave, hwnd=hwnd)
+        self.firmas = 0
+        self.pin_correcto = pin == PIN
+        self.con_pin = pin is not None
+        _SesionConPin.creadas.append(self)
+
+    def __enter__(self):
+        return self.firmante
+
+    def __exit__(self, *excepcion):
+        return False
+
+
+@pytest.fixture
+def sesion_con_pin(monkeypatch):
+    _SesionConPin.creadas = []
+    monkeypatch.setattr(app, "SesionFirma", _SesionConPin)
+    monkeypatch.setattr(app, "INTERVALO_AVANCE_PAGINAS", 0)  # todos los avisos de avance
+    return _SesionConPin.creadas
+
+
+class _VentanaConAvance(VentanaFalsa):
+    def __init__(self):
+        super().__init__(None)
+        self.js = []
+
+    def evaluate_js(self, codigo):
+        self.js.append(codigo)
+
+    def eventos(self):
+        datos = []
+        for codigo in self.js:
+            m = re.search(r"progresoLote\((.*)\)\s*$", codigo, re.S)
+            if m:
+                datos.append(json.loads(m.group(1)))
+        return datos
+
+
+def test_firmar_cada_pagina_con_pin(api, pdf_multipagina, sesion_con_pin, caplog, monkeypatch):
+    caplog.set_level("DEBUG")
+    ventana = _VentanaConAvance()
+    api._asignar_ventana(ventana)
+    monkeypatch.setattr(api, "_hwnd", lambda: None)
+    api.abrir_ruta(str(pdf_multipagina))
+    opciones = {"paginas": "cada_pagina", "tipo": "firma", "pin": PIN}
+
+    r = api.firmar(opciones)
+    assert r["ok"], r
+    assert r["paginas_selladas"] == [0, 1, 2] and r["campos"] == ["FirmaDNIe", "FirmaDNIe_2", "FirmaDNIe_3"]
+    # La sesión recibió el PIN; el PIN no vuelve a la interfaz ni queda en el registro.
+    (sesion,) = sesion_con_pin
+    assert sesion.con_pin and sesion.pin_correcto
+    assert "pin" not in opciones  # se saca de las opciones apenas llega
+    assert PIN not in json.dumps(r) and PIN not in caplog.text
+    assert "PIN provisto: sí" in _lineas(caplog)
+    assert "se solicitará el PIN a Windows" not in _lineas(caplog)
+    # Avance página por página por el mismo canal que el lote.
+    avance = [(e["hechas"], e["total"]) for e in ventana.eventos() if e["evento"] == "paginas"]
+    assert avance == [(0, 3), (1, 3), (2, 3), (3, 3)]
+    assert all(PIN not in codigo for codigo in ventana.js)
+
+    v = api.validar(r["salida"])
+    assert v["ok"] and len(v["firmas"]) == 3
+    assert all(f["integridad"] == "intacta" for f in v["firmas"])
+
+
+def test_el_pin_solo_se_usa_con_cada_pagina(api, pdf_multipagina, sesion_con_pin, caplog):
+    caplog.set_level("INFO")
+    api.abrir_ruta(str(pdf_multipagina))
+    r = api.firmar({"paginas": "todas", "pin": PIN})
+    assert r["ok"], r
+    assert sesion_con_pin == []  # firma de un solo uso, como siempre (Windows pide el PIN)
+    assert "PIN provisto: no" in _lineas(caplog)
+    assert "se solicitará el PIN a Windows" in _lineas(caplog)
+    assert PIN not in caplog.text
+
+
+def test_cancelar_a_mitad_no_deja_archivo(api, pdf_multipagina, sesion_con_pin, monkeypatch):
+    api._asignar_ventana(_VentanaConAvance())
+    monkeypatch.setattr(api, "_hwnd", lambda: None)
+    api.abrir_ruta(str(pdf_multipagina))
+    original = app.FirmanteCNG._firmar_resumen
+    firmas = []
+
+    def _firmar_y_cancelar(self, resumen, algoritmo):
+        firmas.append(1)
+        if len(firmas) == 1:
+            api.cancelar_lote()  # el usuario pulsa «Cancelar» durante la primera página
+        return original(self, resumen, algoritmo)
+
+    monkeypatch.setattr(app.FirmanteCNG, "_firmar_resumen", _firmar_y_cancelar)
+    r = api.firmar({"paginas": "cada_pagina", "pin": PIN})
+    assert r == {"ok": False, "cancelado": True, "mensaje": app.MENSAJE_CANCELADO}
+    assert len(firmas) == 1
+    assert not (pdf_multipagina.parent / "entrada_firmado.pdf").exists()
+    assert api.obtener_cola()["cola"][0]["estado"] == "pendiente"
+
+    # Una firma nueva vuelve a empezar (la cancelación no queda pegada).
+    monkeypatch.setattr(app.FirmanteCNG, "_firmar_resumen", original)
+    assert api.firmar({"paginas": "cada_pagina", "pin": PIN})["ok"]
+
+
+@pytest.mark.parametrize("codigo", [0x8010006B, 0x8010006C, 0x80090033])
+def test_pin_incorrecto_muestra_el_mensaje_de_siempre(api, pdf_multipagina, sesion_con_pin, monkeypatch, codigo):
+    def _rechazado(self, resumen, algoritmo):
+        raise app.ErrorCNG(f"NCryptSignHash falló (0x{codigo:08X}) PIN", codigo=codigo)
+
+    monkeypatch.setattr(app.FirmanteCNG, "_firmar_resumen", _rechazado)
+    api.abrir_ruta(str(pdf_multipagina))
+    r = api.firmar({"paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"] is False
+    esperado = app._MENSAJES_CNG[0x8010006B if codigo == 0x80090033 else codigo]
+    assert r["mensaje"] == esperado
+    assert not (pdf_multipagina.parent / "entrada_firmado.pdf").exists()
+
+
+def test_tomar_pin_saca_el_pin_de_las_opciones():
+    opciones = {"paginas": "cada_pagina", "pin": PIN}
+    assert app.tomar_pin(opciones) == PIN and "pin" not in opciones
+    otras = {"paginas": "todas", "pin": PIN}
+    assert app.tomar_pin(otras) is None and "pin" not in otras
+    assert app.tomar_pin({"paginas": "cada_pagina", "pin": ""}) is None
+    assert app.tomar_pin({"paginas": "cada_pagina", "pin": 1234}) is None
+    assert app.tomar_pin(None) is None

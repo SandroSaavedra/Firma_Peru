@@ -66,7 +66,24 @@ It saves hours of repetitive work and many PIN entries, while meeting the per-pa
     - The codes `CODIGOS_PIN` (0x8010006B, 0x8010006C, NTE_INCORRECT_PASSWORD 0x80090033) stop the session. Every later signature fails without touching the card, and `NCryptSignHash` is never retried.
     - Without a PIN, the flags and calls are exactly as before.
     - Logs say only «PIN provisto: sí/no».
-- [ ] T3 — App + UI: the mode selector, a PIN dialog (password field), progress with Cancel, batch support, and a README section. API and static UI tests.
+- [x] T3 — App + UI: the mode selector, a PIN dialog (password field), progress with Cancel, batch support, and a README section. API and static UI tests.
+  - RED:
+    - 6 errors and 4 failures in `tests/test_app.py` / `tests/test_lote.py`: no `app.tomar_pin`, no `INTERVALO_AVANCE_PAGINAS`, no `pin_provisto` in the «inicio» event, and the PIN was not consumed.
+    - 5 failures in `tests/test_interfaz.py`: no third option, no PIN field, no `pedirPin`, no «paginas» event.
+  - GREEN: full suite → 288 passed; `node --check ui/app.js` OK.
+  - API (`app.py`):
+    - `tomar_pin` removes `pin` from the options as soon as they arrive and keeps it only with `cada_pagina`.
+    - The single-document `cada_pagina` path signs through `SesionFirma(llave, hwnd, pin=...)`, so the key is opened once. The batch uses the same session, so the PIN is asked once for every document.
+    - Page progress goes to the UI through the existing `progresoLote` channel, as the event `{"evento": "paginas", hechas, total[, indice, id]}`. It is throttled to one event every `INTERVALO_AVANCE_PAGINAS = 0.3 s`; the first and last events are always sent.
+    - `cancelar_lote` also cancels mid-document. A single document returns `{"ok": False, "cancelado": True, "mensaje": MENSAJE_CANCELADO}`. In a batch, the document in progress goes back to «Pendiente» and the run ends with `detenido="cancelado"`.
+    - Logs record only «PIN provisto: sí/no».
+    - New messages: 0x80090033 shows the same text as a wrong PIN, and 0x80090022 (NTE_SILENT_CONTEXT) has its own message. Both stop a batch.
+  - UI (`ui/index.html`, `ui/app.js`, `ui/estilos.css`):
+    - The selector has a third option, «Firma real en cada página», with the hint «Una firma digital por página; pide el PIN una sola vez.».
+    - The PIN dialog has a password field (`#inp-pin`). Enter confirms; Cancel or Escape closes. The field is cleared on confirm, cancel and close, and the PIN is never kept in `estado` or in preferences.
+    - Progress shows «Firmando página X de N» with Cancel.
+    - In a certified document «todas» stays disabled, but «cada_pagina» is allowed.
+  - README: new section «Firma real en cada página».
 
 ## Route
 
@@ -84,4 +101,10 @@ Delegated direct, one writer. Trigger: 2+ non-trivial files (`firma_pdf.py`, `dn
 
 - 2026-11-19: document created; T1–T3 delegated to one writer.
 - 2026-11-19: T1 done (core loop + certified-document policy + benchmark) — commit `bd966ea`.
-- 2026-11-19: T2 done (PIN supplied once through CNG, silent signing, wiped buffer).
+- 2026-11-19: T2 done (PIN supplied once through CNG, silent signing, wiped buffer) — commit `590f3de`.
+- 2026-11-19: T3 done (API, UI, README). Its commit hash is in the git log («feat: add the Firma real en cada página option …»).
+- Next step: a real DNIe test by the user. It should confirm four things:
+  - the PIN is asked only once and no Windows PIN dialog appears;
+  - a wrong PIN stops at once;
+  - Acrobat shows every per-page signature as valid, including after a second signer;
+  - how long a long document takes with the card.

@@ -55,6 +55,7 @@ const el = {
   lblGuardarComo: $("lbl-guardar-como"), btnFirmarTexto: $("btn-firmar-texto"),
   dialogoProgreso: $("dialogo-progreso"), dialogoProgresoValor: $("dialogo-progreso-valor"),
   dialogoNota: $("dialogo-nota"), dialogoLista: $("dialogo-lista"),
+  dialogoPin: $("dialogo-pin"), inpPin: $("inp-pin"), txtPaginasAyuda: $("txt-paginas-ayuda"),
   tabFirmar: $("tab-firmar"), tabValidar: $("tab-validar"),
   vistaFirmar: $("vista-firmar"), vistaValidar: $("vista-validar"),
   btnAbrir: $("btn-abrir"), btnAbrirVacio: $("btn-abrir-vacio"), btnTema: $("btn-tema"),
@@ -121,6 +122,10 @@ const ESTADOS_COLA = {
 };
 const NOTA_PIN_LOTE =
   "Si Windows le pide el PIN del DNIe, escríbalo en su ventana. Según la tarjeta, puede pedirlo una sola vez o en cada documento.";
+// Firma real en cada página: el PIN se pide una sola vez en la propia aplicación.
+const NOTA_PIN_PROPIO = "El PIN se usa solo para esta firma y no se guarda.";
+const NOTA_PIN_PROVISTO = "No se volverá a pedir el PIN. Un documento largo puede tardar varios minutos.";
+const OPCIONES_PAGINAS = ["todas", "ultima", "cada_pagina"];
 
 // ---------------------------------------------------------------- utilidades
 
@@ -557,10 +562,8 @@ function vaciarVisor() {
   el.notaFirmas.hidden = true;
   el.btnValidarAbierto.disabled = true;
   el.totalPaginas.textContent = "0";
-  const radioTodas = document.querySelector('input[name="paginas"][value="todas"]');
-  radioTodas.disabled = false;
-  radioTodas.checked = leerPreferencia("paginas", "todas") === "todas";
-  if (!radioTodas.checked) document.querySelector('input[name="paginas"][value="ultima"]').checked = true;
+  document.querySelector('input[name="paginas"][value="todas"]').disabled = false;
+  marcarOpcionPaginas(false);
   document.querySelector('input[name="pagina-firma"][value="ultima"]').checked = true;
   actualizarTextoVacio();
   actualizarAjustesVisibles();
@@ -799,7 +802,6 @@ function configurarSegunFirmas() {
   const certificadoSinCambios = estado.info.docmdp === 1;
   const soloCampo = soloCampoDeFirma();
   const radioTodas = document.querySelector('input[name="paginas"][value="todas"]');
-  const radioUltima = document.querySelector('input[name="paginas"][value="ultima"]');
 
   el.chipFirmas.hidden = n === 0;
   el.chipFirmas.replaceChildren(icono("escudo"), plural(n, "firma", "firmas"));
@@ -820,9 +822,29 @@ function configurarSegunFirmas() {
       `sin invalidar ${n === 1 ? "la anterior" : "las anteriores"}.`;
   }
   radioTodas.disabled = soloCampo;
-  if (soloCampo) radioUltima.checked = true;
-  else radioTodas.checked = leerPreferencia("paginas", "todas") === "todas";
-  if (!radioTodas.checked) radioUltima.checked = true;
+  marcarOpcionPaginas(soloCampo);
+}
+
+// Opción de páginas guardada. En un documento certificado (`soloCampo`) no se
+// ofrece «todas» (sellos en las demás páginas), pero sí «cada_pagina»: cada
+// página recibe su propio campo de firma, un cambio que la certificación permite.
+function opcionPaginasPreferida(soloCampo) {
+  let valor = leerPreferencia("paginas", "todas");
+  if (!OPCIONES_PAGINAS.includes(valor)) valor = "todas";
+  return soloCampo && valor === "todas" ? "ultima" : valor;
+}
+
+function marcarOpcionPaginas(soloCampo) {
+  document.querySelector(`input[name="paginas"][value="${opcionPaginasPreferida(soloCampo)}"]`).checked = true;
+  actualizarAyudaPaginas();
+}
+
+function opcionPaginas() {
+  return document.querySelector('input[name="paginas"]:checked').value;
+}
+
+function actualizarAyudaPaginas() {
+  el.txtPaginasAyuda.hidden = opcionPaginas() !== "cada_pagina";
 }
 
 // ---------------------------------------------------------------- render
@@ -1017,8 +1039,9 @@ function paginaDelCampo() {
 
 function paginasConSello() {
   const campo = paginaDelCampo();
-  const todas = document.querySelector('input[name="paginas"]:checked').value === "todas";
-  return { campo, todas: todas && !soloCampoDeFirma() };
+  const valor = opcionPaginas();
+  // «cada_pagina»: un sello (con su propia firma) en cada página, también en un documento certificado.
+  return { campo, todas: valor === "cada_pagina" || (valor === "todas" && !soloCampoDeFirma()) };
 }
 
 function actualizarMarca(n) {
@@ -1492,10 +1515,12 @@ function ponerProgreso(fraccion) {
   el.dialogoProgreso.setAttribute("aria-valuenow", String(porcentaje));
 }
 
-function mostrarDialogo({ tipo, titulo, texto, ruta = null, acciones = [], progreso = null, nota = null, lista = [] }) {
+function mostrarDialogo({ tipo, titulo, texto, ruta = null, acciones = [], progreso = null, nota = null, lista = [], pin = false }) {
   if (tipo === "error") registrar("error", `Diálogo de error «${titulo}»: ${texto}`);
   if (el.dialogoFondo.hidden) estado.focoPrevio = document.activeElement;
   el.dialogo.dataset.tipo = tipo;
+  el.inpPin.value = "";
+  el.dialogoPin.hidden = !pin;
   el.dialogoTitulo.textContent = titulo;
   el.dialogoTexto.textContent = texto;
   el.dialogoRuta.hidden = !ruta;
@@ -1518,18 +1543,63 @@ function mostrarDialogo({ tipo, titulo, texto, ruta = null, acciones = [], progr
   );
   el.dialogoFondo.hidden = false;
   const primero = el.dialogoAcciones.querySelector("button");
-  (primero || el.dialogo).focus();
+  (pin ? el.inpPin : primero || el.dialogo).focus();
 }
 
 function cerrarDialogo() {
   if (el.dialogo.dataset.tipo === "pin" && estado.firmando) return;
+  el.inpPin.value = "";
+  el.dialogoPin.hidden = true;
   el.dialogoFondo.hidden = true;
   if (estado.focoPrevio && estado.focoPrevio.focus) estado.focoPrevio.focus();
+  // Cerrar el diálogo del PIN (Cancelar, Escape) equivale a no darlo.
+  const resolver = resolverPin;
+  resolverPin = null;
+  if (resolver) resolver(null);
+}
+
+// ---------------------------------------------------------------- PIN propio
+
+// Promesa pendiente de `pedirPin`. El PIN nunca se guarda en `estado`: vive
+// solo en el campo (que se vacía al cerrar) y en la variable local de quien
+// firma, hasta enviarlo a Python.
+let resolverPin = null;
+
+// Pide el PIN del DNIe en la aplicación («Firma real en cada página»).
+// Devuelve el PIN, o null si el usuario cancela.
+function pedirPin(texto) {
+  return new Promise((resolver) => {
+    mostrarDialogo({
+      tipo: "clave",
+      titulo: "PIN del DNIe",
+      texto,
+      nota: NOTA_PIN_PROPIO,
+      pin: true,
+      acciones: [
+        { texto: "Firmar", icono: "pluma", primario: true, accion: aceptarPin },
+        { texto: "Cancelar", accion: cerrarDialogo },
+      ],
+    });
+    resolverPin = resolver;
+  });
+}
+
+function aceptarPin() {
+  const pin = el.inpPin.value;
+  el.inpPin.value = "";
+  if (!pin) {
+    el.inpPin.focus();
+    return;
+  }
+  const resolver = resolverPin;
+  resolverPin = null;
+  cerrarDialogo();
+  if (resolver) resolver(pin);
 }
 
 function atraparFoco(e) {
   if (el.dialogoFondo.hidden || e.key !== "Tab") return;
-  const enfocables = [...el.dialogo.querySelectorAll("button")];
+  const enfocables = [...el.dialogo.querySelectorAll("button, input")].filter((n) => !n.closest("[hidden]") && !n.disabled);
   if (!enfocables.length) {
     e.preventDefault();
     return;
@@ -1576,34 +1646,58 @@ async function firmar() {
     ...opcionesComunes(),
     caja: cajaDocumento(),
     posiciones_paginas: posicionesPaginasParaPython(ajuste),
-    paginas: document.querySelector('input[name="paginas"]:checked').value,
+    paginas: opcionPaginas(),
     pagina_firma: ajuste && ajuste.pagina != null ? ajuste.pagina : -1,
     destino,
   };
 
+  // «Firma real en cada página»: el PIN se pide UNA vez aquí y no se guarda.
+  let pin = null;
+  if (opciones.paginas === "cada_pagina") {
+    registrar("info", "Firmar: se pide el PIN en la aplicación (firma real en cada página).");
+    pin = await pedirPin(
+      `Se firmará cada una de las ${plural(estado.total, "página", "páginas")} con su propia firma digital. Escriba el PIN una sola vez.`,
+    );
+    if (pin === null) {
+      registrar("info", "Firmar: ingreso del PIN cancelado; no se firma.");
+      return;
+    }
+  }
+
   estado.firmando = true;
   actualizarBotonFirmar();
-  mostrarDialogo({
-    tipo: "pin",
-    titulo: "Confirme el PIN en la ventana de Windows",
-    texto: "Windows abrirá su propio cuadro de diálogo para el PIN del DNIe. Si no lo ve, revise la barra de tareas.",
-  });
-  const r = await llamar("firmar", opciones);
+  if (pin === null) {
+    mostrarDialogo({
+      tipo: "pin",
+      titulo: "Confirme el PIN en la ventana de Windows",
+      texto: "Windows abrirá su propio cuadro de diálogo para el PIN del DNIe. Si no lo ve, revise la barra de tareas.",
+    });
+  } else {
+    // Avance página por página (eventos "paginas" de progresoLote) con «Cancelar».
+    estado.lote = { total: 1, indice: 1, hechos: 0, nombre: estado.info.nombre, cancelando: false, unico: true, pinProvisto: true };
+    mostrarDialogoLote();
+  }
+  const r = await llamar("firmar", pin === null ? opciones : { ...opciones, pin });
+  pin = null;
+  estado.lote = null;
   estado.firmando = false;
   actualizarBotonFirmar();
   refrescarCola(); // el documento queda «Firmado» (o «Error») en la lista
 
   if (!r.ok && r.cancelado) {
-    // El usuario canceló «Guardar como»: se vuelve al estado listo sin error.
+    // El usuario canceló «Guardar como» o la firma página por página: sin error.
     cerrarDialogo();
+    if (r.mensaje) aviso(r.mensaje);
     return;
   }
   if (r.ok) {
     const previas = r.firmas_previas > 0 ? ` El PDF ya tenía ${plural(r.firmas_previas, "firma", "firmas")}.` : "";
     const sellos =
-      r.modo === "solo_campo"
-        ? `El documento está certificado; el sello se colocó solo en el campo de firma (página ${r.pagina_firma + 1}).`
-        : `Sello en ${plural(r.paginas_selladas.length, "página", "páginas")} de ${r.total_paginas} y 1 firma digital.${previas}`;
+      opciones.paginas === "cada_pagina"
+        ? `${plural(r.paginas_selladas.length, "página firmada", "páginas firmadas")}, cada una con su propia firma digital.${previas}`
+        : r.modo === "solo_campo"
+          ? `El documento está certificado; el sello se colocó solo en el campo de firma (página ${r.pagina_firma + 1}).`
+          : `Sello en ${plural(r.paginas_selladas.length, "página", "páginas")} de ${r.total_paginas} y 1 firma digital.${previas}`;
     mostrarDialogo({
       tipo: "ok",
       titulo: "Documento firmado",
@@ -1640,14 +1734,27 @@ async function firmarLote() {
     ...opcionesComunes(),
     caja: estado.caja,
     // Opción común: no se toma del control, que en un PDF certificado se fuerza a «solo la página de firma».
-    paginas: leerPreferencia("paginas", "todas"),
+    paginas: opcionPaginasPreferida(false),
     en_carpeta: el.chkGuardarComo.checked,
     ajustes: ajustesParaPython(),
   };
+  // «Firma real en cada página»: un solo PIN para todos los documentos del lote.
+  let pin = null;
+  if (opciones.paginas === "cada_pagina") {
+    registrar("info", "Lote: se pide el PIN en la aplicación, una vez para todos los documentos.");
+    pin = await pedirPin(
+      `Se firmará cada página de ${plural(pendientes().length, "documento", "documentos")} con su propia firma digital. Escriba el PIN una sola vez para todos.`,
+    );
+    if (pin === null) {
+      registrar("info", "Lote: ingreso del PIN cancelado; no se firma.");
+      return;
+    }
+  }
   estado.firmando = true;
   estado.lote = null;
   renderizarCola();
-  const r = await llamar("firmar_lote", opciones);
+  const r = await llamar("firmar_lote", pin === null ? opciones : { ...opciones, pin });
+  pin = null;
   estado.firmando = false;
   estado.lote = null;
   if (r.cola) aplicarCola(r.cola);
@@ -1676,20 +1783,40 @@ function mostrarDialogoLote() {
     titulo: "Preparando la firma…",
     texto: "Abriendo el DNIe.",
     progreso: 0,
-    nota: NOTA_PIN_LOTE,
+    nota: estado.lote && estado.lote.pinProvisto ? NOTA_PIN_PROVISTO : NOTA_PIN_LOTE,
     acciones: [{ texto: "Cancelar", accion: cancelarLote }],
   });
   actualizarDialogoLote();
 }
 
+// «Firmando página X de N» de la firma real en cada página (null si no aplica).
+function textoPaginas(l) {
+  const p = l.paginas;
+  return p && p.total ? `Firmando página ${Math.min(p.hechas + 1, p.total)} de ${p.total}` : null;
+}
+
 function actualizarDialogoLote() {
   const l = estado.lote;
   if (!l || el.dialogo.dataset.tipo !== "pin") return;
+  const p = l.paginas;
+  const fraccionPaginas = p && p.total ? p.hechas / p.total : 0;
+  if (l.unico) {
+    // Un documento, página por página.
+    el.dialogoTitulo.textContent = textoPaginas(l) || "Preparando la firma…";
+    el.dialogoTexto.textContent = l.cancelando ? "Cancelando: no se guardará ningún archivo." : l.nombre || "Abriendo el DNIe.";
+    ponerProgreso(fraccionPaginas);
+    return;
+  }
   el.dialogoTitulo.textContent = l.indice ? `Firmando ${l.indice} de ${l.total}` : "Preparando la firma…";
-  el.dialogoTexto.textContent = l.cancelando
-    ? `${l.nombre || "Documento actual"}: se detendrá al terminar este documento.`
-    : l.nombre || "Abriendo el DNIe.";
-  ponerProgreso(l.total ? l.hechos / l.total : 0);
+  const detalle = textoPaginas(l);
+  if (l.cancelando) {
+    el.dialogoTexto.textContent = p
+      ? `${l.nombre || "Documento actual"}: se detendrá sin guardar este documento.`
+      : `${l.nombre || "Documento actual"}: se detendrá al terminar este documento.`;
+  } else {
+    el.dialogoTexto.textContent = l.nombre ? (detalle ? `${l.nombre}: ${detalle.toLowerCase()}` : l.nombre) : "Abriendo el DNIe.";
+  }
+  ponerProgreso(l.total ? (l.hechos + fraccionPaginas) / l.total : 0);
 }
 
 async function cancelarLote() {
@@ -1708,8 +1835,16 @@ async function cancelarLote() {
 function progresoLote(evento) {
   if (!evento) return;
   if (evento.evento === "inicio") {
-    estado.lote = { total: evento.total, indice: 0, hechos: 0, nombre: "", cancelando: false };
+    estado.lote = { total: evento.total, indice: 0, hechos: 0, nombre: "", cancelando: false, pinProvisto: Boolean(evento.pin_provisto) };
     mostrarDialogoLote();
+    return;
+  }
+  if (evento.evento === "paginas") {
+    // Firma real en cada página: avance dentro del documento en curso.
+    if (estado.lote) {
+      estado.lote.paginas = { hechas: evento.hechas, total: evento.total };
+      actualizarDialogoLote();
+    }
     return;
   }
   if (evento.evento !== "archivo") return;
@@ -1722,6 +1857,7 @@ function progresoLote(evento) {
   if (estado.lote) {
     estado.lote.indice = evento.indice;
     estado.lote.nombre = evento.nombre;
+    estado.lote.paginas = null; // otro documento: su avance por página empieza de nuevo
     if (evento.estado !== "firmando") estado.lote.hechos = evento.indice;
   }
   renderizarCola();
@@ -2194,7 +2330,10 @@ function iniciar() {
   el.btnAbrirRegistro.addEventListener("click", abrirRegistro);
   for (const radio of document.querySelectorAll('input[name="paginas"], input[name="pagina-firma"]')) {
     radio.addEventListener("change", () => {
-      if (radio.name === "paginas") guardarPreferencia("paginas", radio.value);
+      if (radio.name === "paginas") {
+        guardarPreferencia("paginas", radio.value);
+        actualizarAyudaPaginas();
+      }
       if (radio.name === "pagina-firma") {
         // «Página actual» es un ajuste de este documento; los demás siguen en su última página.
         const a = ajusteEditable();
@@ -2226,6 +2365,13 @@ function iniciar() {
     actualizarDestino();
   });
   el.btnFirmar.addEventListener("click", firmar);
+  // Enter en el campo del PIN equivale a «Firmar» (Escape lo cierra, ver `atajos`).
+  el.inpPin.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      aceptarPin();
+    }
+  });
   el.btnValidarAbierto.addEventListener("click", () => validar());
   el.btnValidarOtro.addEventListener("click", validarOtro);
 

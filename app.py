@@ -46,6 +46,7 @@ from firma_pdf import (
     MOTIVOS_POR_TIPO,
     TIPOS_SELLO,
     ErrorFirma,
+    FirmaCancelada,
     OpcionesFirma,
     PosicionRelativa,
     analizar_pdf,
@@ -82,6 +83,10 @@ _MENSAJES_CNG = {
     0x800704C7: "Se canceló la operación. El documento no se firmó.",
     0x8010006B: "El PIN es incorrecto. Después de varios intentos fallidos el DNIe se bloquea.",
     0x8010006C: "El PIN del DNIe está bloqueado. Debe desbloquearse en RENIEC.",
+    # NTE_INCORRECT_PASSWORD: lo mismo que SCARD_W_WRONG_CHV, según el minidriver.
+    0x80090033: "El PIN es incorrecto. Después de varios intentos fallidos el DNIe se bloquea.",
+    # NTE_SILENT_CONTEXT: con el PIN provisto, la tarjeta quiso mostrar el cuadro de Windows.
+    0x80090022: "El DNIe no aceptó el PIN sin su propio cuadro de diálogo. Firme con otra opción de páginas.",
     0x8010000C: "No se detecta el DNIe en el lector. Insértelo e intente de nuevo.",
     0x80100069: "Se retiró el DNIe del lector durante la operación.",
     0x8010002E: "No hay lectores de tarjetas conectados.",
@@ -95,6 +100,8 @@ _CODIGOS_CANCELADO = {0x8010006E, 0x800704C7}  # SCARD_W_CANCELLED_BY_USER, ERRO
 _CODIGOS_DETENER = {
     0x8010006B,  # SCARD_W_WRONG_CHV
     0x8010006C,  # SCARD_W_CHV_BLOCKED
+    0x80090033,  # NTE_INCORRECT_PASSWORD
+    0x80090022,  # NTE_SILENT_CONTEXT (PIN provisto que la tarjeta no aceptó en silencio)
     0x8010000C,  # SCARD_E_NO_SMARTCARD
     0x80100069,  # SCARD_W_REMOVED_CARD
     0x8010002E,  # SCARD_E_NO_READERS_AVAILABLE
@@ -102,6 +109,10 @@ _CODIGOS_DETENER = {
 }
 MENSAJE_OCUPADO = "Espere a que termine la firma en curso."
 MENSAJE_CANCELADO_LOTE = "Se canceló la firma por lotes. Los documentos restantes quedan pendientes."
+MENSAJE_CANCELADO = "Se canceló la firma. No se guardó ningún archivo."
+# Firma real en cada página: segundos mínimos entre dos avisos de avance a la
+# interfaz (el primero y el último siempre se envían).
+INTERVALO_AVANCE_PAGINAS = 0.3
 
 # Eventos que la interfaz envía al registro (`registrar_evento`).
 NIVELES_EVENTO = {"info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
@@ -167,6 +178,20 @@ def describir_error(error: BaseException) -> str:
     except Exception:  # noqa: BLE001
         sufijo = ""
     return f"{type(error).__name__}: {texto}{sufijo}"
+
+
+def tomar_pin(opciones) -> str | None:
+    """
+    Saca el PIN de las opciones que envía la interfaz (para que no viaje con
+    ellas ni llegue al registro) y lo devuelve solo con «cada_pagina»; con
+    cualquier otra opción se descarta y Windows pide el PIN como siempre.
+    """
+    if not isinstance(opciones, dict):
+        return None
+    pin = opciones.pop("pin", None)
+    if opciones.get("paginas") != "cada_pagina" or not isinstance(pin, str) or not pin:
+        return None
+    return pin
 
 
 def _ahora() -> datetime.datetime:
@@ -1041,15 +1066,23 @@ class Api:
         """
         Firma el PDF abierto. Corre en un hilo de trabajo dedicado; durante la
         firma Windows muestra su cuadro de diálogo del PIN.
+
+        Con `paginas="cada_pagina"` la interfaz puede enviar `pin` (pedido UNA
+        vez en su propio diálogo): se saca de las opciones de inmediato, se
+        entrega a la sesión CNG y nunca se registra ni se devuelve. El avance
+        página por página llega a la interfaz con `progresoLote` (evento
+        "paginas") y `cancelar_lote` detiene la firma sin dejar archivo.
         """
+        pin = tomar_pin(opciones)
         if not self._pdf:
             logger.warning("Firmar: no hay documento abierto.")
             return {"ok": False, "mensaje": "Abra primero un PDF."}
         logger.info(
-            "Firmar: inicio con %s (%s; %s).",
+            "Firmar: inicio con %s (%s; %s; PIN provisto: %s).",
             self._pdf["nombre"],
             "con ruta" if self._pdf["ruta"] else "sin ruta, recibido como bytes",
             self._resumen_opciones(opciones),
+            "sí" if pin else "no",
         )
         if not self._firmando.acquire(blocking=False):
             logger.warning("Firmar: ya hay una firma en curso; se ignora el pedido.")
@@ -1068,7 +1101,10 @@ class Api:
                     return eleccion  # {"ok": False, "cancelado": True} si el usuario cancela
                 logger.info("Firmar: destino elegido %s.", eleccion["ruta"])
                 opciones["destino"] = eleccion["ruta"]
-            return self._ejecutor.submit(self._firmar, opciones).result()
+            self._cancelar_lote.clear()
+            futuro = self._ejecutor.submit(self._firmar, opciones, pin)
+            pin = None  # solo la sesión CNG lo conserva (en su búfer, que borra al cerrar)
+            return futuro.result()
         finally:
             self._firmando.release()
 
@@ -1086,7 +1122,7 @@ class Api:
         except Exception:  # noqa: BLE001
             return "opciones ilegibles"
 
-    def _firmar(self, opciones: dict) -> dict:
+    def _firmar(self, opciones: dict, pin: str | None = None) -> dict:
         item = self._buscar(id=self._pdf["id"])
         entrada = Path(self._pdf["archivo"])
         inicio = time.monotonic()
@@ -1108,17 +1144,37 @@ class Api:
             llave = elegir_llave_de_firma()
             logger.info("Firma: llave elegida en %d ms (%s).", _ms(inicio), describir_llave(llave))
             hwnd = self._hwnd()
-            signer = FirmanteCNG(llave, hwnd=hwnd)
-            logger.info(
-                "Firma: se solicitará el PIN a Windows para %s (ventana asociada: %s).",
-                self._pdf["nombre"], "sí" if hwnd else "no",
-            )
             antes = time.monotonic()
-            resultado = firmar_pdf(entrada, salida, signer, llave.titular, opts)
+            if opts.paginas == "cada_pagina":
+                # Una firma por página con la llave abierta UNA vez; con PIN, sin cuadros de Windows.
+                sesion = SesionFirma(llave, hwnd, pin=pin)
+                logger.info(
+                    "Firma: firma real en cada página de %s (PIN provisto: %s; %s; ventana asociada: %s).",
+                    self._pdf["nombre"], "sí" if pin else "no",
+                    "no se pedirá el PIN a Windows" if pin else "se solicitará el PIN a Windows",
+                    "sí" if hwnd else "no",
+                )
+                pin = None
+                with sesion as signer:
+                    resultado = firmar_pdf(
+                        entrada, salida, signer, llave.titular, opts, progreso=self._avance_paginas()
+                    )
+            else:
+                signer = FirmanteCNG(llave, hwnd=hwnd)
+                logger.info(
+                    "Firma: se solicitará el PIN a Windows para %s (ventana asociada: %s).",
+                    self._pdf["nombre"], "sí" if hwnd else "no",
+                )
+                resultado = firmar_pdf(entrada, salida, signer, llave.titular, opts)
             logger.info(
                 "Firma: firmar_pdf terminó en %d ms: %s (modo=%s, páginas selladas=%d); total %d ms.",
                 _ms(antes), Path(resultado.salida).name, resultado.modo, len(resultado.paginas_selladas), _ms(inicio),
             )
+        except FirmaCancelada:
+            logger.info("Firma cancelada por el usuario tras %d ms; no se escribió ningún archivo.", _ms(inicio))
+            if item:
+                self._marcar(item, "pendiente")
+            return {"ok": False, "cancelado": True, "mensaje": MENSAJE_CANCELADO}
         except (ErrorCNG, ErrorFirma, OSError, KeyError, ValueError) as e:
             logger.warning("Firma fallida tras %d ms: %s", _ms(inicio), describir_error(e))
             self._marcar_tras_error(item, e)
@@ -1182,9 +1238,13 @@ class Api:
         `opciones`: las comunes (tipo, motivo, lugar, paginas, caja), `en_carpeta`
         (guardar todo en una carpeta) y `ajustes` ({id: {caja, pagina_firma,
         posiciones_paginas}}) para los documentos con posición, página del campo
-        o posiciones por página propias.
+        o posiciones por página propias. Con `paginas="cada_pagina"` puede
+        venir `pin`: se pide una sola vez para todos los documentos (ver `firmar`).
         """
-        logger.info("Lote: pedido de firma (%s).", self._resumen_opciones(opciones))
+        pin = tomar_pin(opciones)
+        logger.info(
+            "Lote: pedido de firma (%s; PIN provisto: %s).", self._resumen_opciones(opciones), "sí" if pin else "no"
+        )
         if not self._firmando.acquire(blocking=False):
             logger.warning("Lote: ya hay una firma en curso; se ignora el pedido.")
             return {"ok": False, "mensaje": "Ya hay una firma en curso."}
@@ -1209,12 +1269,18 @@ class Api:
                     return {"ok": False, "cancelado": True}
                 logger.info("Lote: carpeta elegida %s.", carpeta)
             self._cancelar_lote.clear()
-            return self._ejecutor.submit(self._firmar_lote, items, opciones, carpeta, en_carpeta).result()
+            futuro = self._ejecutor.submit(self._firmar_lote, items, opciones, carpeta, en_carpeta, pin)
+            pin = None  # solo la sesión CNG lo conserva (en su búfer, que borra al cerrar)
+            return futuro.result()
         finally:
             self._firmando.release()
 
     def cancelar_lote(self) -> dict:
-        """Detiene el lote antes del siguiente documento (el actual se termina de escribir)."""
+        """
+        Detiene el lote antes del siguiente documento (el actual se termina de
+        escribir). Con «cada_pagina» (un documento o un lote) se detiene antes
+        de la siguiente página y el documento en curso no se guarda.
+        """
         self._cancelar_lote.set()
         return {"ok": True}
 
@@ -1237,7 +1303,28 @@ class Api:
         except Exception:  # noqa: BLE001 - el avance es informativo
             logger.debug("No se pudo enviar el avance del lote", exc_info=True)
 
-    def _firmar_item(self, item, opciones, ajuste, firmante, titular, carpeta, en_carpeta):
+    def _avance_paginas(self, base: dict | None = None):
+        """
+        `progreso(hechas, total)` para `firmar_pdf` con «cada_pagina»: envía el
+        evento "paginas" a la interfaz (el primero, el último y, entre medio,
+        uno cada INTERVALO_AVANCE_PAGINAS s) y devuelve False si se pidió cancelar.
+        """
+        base = base or {}
+        ultimo = None
+
+        def progreso(hechas: int, total: int) -> bool:
+            nonlocal ultimo
+            ahora = time.monotonic()
+            if hechas in (0, total) or ultimo is None or ahora - ultimo >= INTERVALO_AVANCE_PAGINAS:
+                ultimo = ahora
+                self._emitir_progreso({**base, "evento": "paginas", "hechas": hechas, "total": total})
+            if hechas and (hechas % 50 == 0 or hechas == total):
+                logger.info("Firma por página: %d de %d página(s) firmadas.", hechas, total)
+            return not self._cancelar_lote.is_set()
+
+        return progreso
+
+    def _firmar_item(self, item, opciones, ajuste, firmante, titular, carpeta, en_carpeta, indice=None):
         ajuste = ajuste if isinstance(ajuste, dict) else {}
         pagina = ajuste.get("pagina_firma")
         # «Página actual» propia de este documento, limitada a sus páginas; si no, la última.
@@ -1257,15 +1344,21 @@ class Api:
             "Lote: %s (firmas=%d, docmdp=%s): %s; salida %s.",
             item["nombre"], len(item["firmas"]), item["docmdp"], _resumen_opts(opts), salida.name,
         )
-        return firmar_pdf(Path(item["archivo"]), salida, firmante, titular, opts)
+        extra = {}
+        if opts.paginas == "cada_pagina":
+            extra["progreso"] = self._avance_paginas({"indice": indice, "id": item["id"]})
+        return firmar_pdf(Path(item["archivo"]), salida, firmante, titular, opts, **extra)
 
-    def _firmar_lote(self, items: list[dict], opciones: dict, carpeta: Path | None, en_carpeta: bool) -> dict:
+    def _firmar_lote(
+        self, items: list[dict], opciones: dict, carpeta: Path | None, en_carpeta: bool, pin: str | None = None
+    ) -> dict:
         total = len(items)
         ajustes = opciones.get("ajustes") or {}
         firmados, errores, procesados = [], [], set()
         detenido = mensaje = None
         firmas_en_sesion = 0
-        self._emitir_progreso({"evento": "inicio", "total": total})
+        pin_provisto = bool(pin)
+        self._emitir_progreso({"evento": "inicio", "total": total, "pin_provisto": pin_provisto})
         logger.info("Lote: %d documento(s) por firmar.", total)
         inicio_lote = time.monotonic()
         try:
@@ -1273,9 +1366,12 @@ class Api:
             llave = elegir_llave_de_firma()
             logger.info("Lote: llave elegida en %d ms (%s).", _ms(inicio_lote), describir_llave(llave))
             hwnd = self._hwnd()
-            sesion = SesionFirma(llave, hwnd)
+            sesion = SesionFirma(llave, hwnd, pin=pin)
+            pin = None  # la sesión lo guarda en su búfer y lo borra al cerrar
             logger.info(
-                "Lote: se abre la sesión CNG; se solicitará el PIN a Windows (ventana asociada: %s).",
+                "Lote: se abre la sesión CNG; %s (PIN provisto: %s; ventana asociada: %s).",
+                "no se pedirá el PIN a Windows" if pin_provisto else "se solicitará el PIN a Windows",
+                "sí" if pin_provisto else "no",
                 "sí" if hwnd else "no",
             )
             try:
@@ -1293,8 +1389,19 @@ class Api:
                         antes = time.monotonic()
                         try:
                             resultado = self._firmar_item(
-                                item, opciones, ajustes.get(item["id"]), firmante, llave.titular, carpeta, en_carpeta
+                                item, opciones, ajustes.get(item["id"]), firmante, llave.titular, carpeta, en_carpeta,
+                                indice,
                             )
+                        except FirmaCancelada:
+                            # «Cancelar» a mitad de un documento («cada_pagina»): no se guardó.
+                            logger.info(
+                                "Lote: documento %d de %d (%s) cancelado a mitad tras %d ms; no se guardó.",
+                                indice, total, item["nombre"], _ms(antes),
+                            )
+                            self._marcar(item, "pendiente")
+                            self._emitir_progreso({**base, "estado": "pendiente", "mensaje": MENSAJE_CANCELADO})
+                            detenido, mensaje = "cancelado", MENSAJE_CANCELADO_LOTE
+                            break
                         except Exception as e:  # noqa: BLE001 - cada error se clasifica
                             texto = mensaje_de_error(e)
                             accion = accion_tras_error(e)

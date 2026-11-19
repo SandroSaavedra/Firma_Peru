@@ -77,6 +77,33 @@ lo quita de la lista y deja la ventana lista para otro. Las opciones de firma se
 En la consola, `python app.py` registra cuántas firmas se hicieron con la misma
 llave abierta (`Sesión de firma cerrada: N firma(s) …`), nunca el PIN.
 
+### Firma real en cada página
+
+Con **Sello visible en → Firma real en cada página**, cada página recibe su
+**propia** firma digital, con su campo de firma y su sello en esa página, como
+el visado folio por folio en papel. En cambio, **Todas las páginas** pone una
+sola firma y repite el sello en las demás páginas.
+
+- **El PIN se pide una sola vez**, en un cuadro de la propia aplicación: al
+  firmar un documento o, en un lote, una vez para todos los documentos. La
+  aplicación se lo entrega al DNIe antes de cada firma, así que Windows no
+  vuelve a mostrar su cuadro del PIN.
+- **El PIN nunca se guarda**: queda solo en memoria mientras dura la firma y
+  después se borra. No se escribe en el registro ni en la configuración, y no
+  vuelve a la interfaz.
+- Si el PIN es incorrecto o está bloqueado, la firma se detiene en el acto, sin
+  reintentar, para no bloquear el DNIe.
+- Mientras firma se ve «Firmando página X de N». **Cancelar** se detiene antes
+  de la página siguiente y **no guarda** ese documento. El `_firmado.pdf` solo
+  se escribe cuando todas las páginas quedaron firmadas.
+- **Tarda**: cada página es una firma completa. En una prueba con un documento
+  real de 569 páginas y 224 MB, sin tarjeta, el PDF tardó unos 6 minutos (de
+  0,45 a 0,85 s por página). Con el DNIe hay que sumar la firma de la tarjeta
+  en cada página, así que un documento de ese tamaño puede tardar de 10 a
+  15 minutos. El archivo crece unos 30 KB por página.
+- Funciona también en PDF ya firmados (las firmas anteriores siguen válidas) y
+  en documentos certificados que admiten cambios.
+
 La pestaña **Validar firmas** muestra, para cada firma, el firmante, la fecha,
 si el documento fue alterado, si hubo modificaciones posteriores y si el
 certificado es de confianza según los certificados raíz de Windows.
