@@ -89,9 +89,12 @@ marcada; **Todas las páginas** (una firma y el sello repetido en las demás) y
   firmar un documento o, en un lote, una vez para todos los documentos. La
   aplicación se lo entrega al DNIe antes de cada firma, así que Windows no
   vuelve a mostrar su cuadro del PIN.
-- Algunos DNIe (versión 3.0) exigen el PIN en cada firma y no aceptan el que
-  entrega la aplicación. Con esos DNIe, Windows pide el PIN en cada página y el
-  diálogo de avance lo indica; cancelar ese cuadro cancela la firma sin guardar.
+- Con el DNIe 3.0, la aplicación firma por medio del módulo de IDEMIA que
+  instala el controlador del DNIe 3.0 de RENIEC (`idplug-pkcs11.dll`), así que
+  el PIN también se escribe una sola vez. Si ese módulo no está disponible, el
+  DNIe 3.0 no acepta el PIN que entrega la aplicación y Windows pide el PIN en
+  cada página; el diálogo de avance lo indica y cancelar ese cuadro cancela la
+  firma sin guardar.
 - **El PIN nunca se guarda**: queda solo en memoria mientras dura la firma y
   después se borra. No se escribe en el registro ni en la configuración, y no
   vuelve a la interfaz.
@@ -233,10 +236,10 @@ Las pruebas no usan la tarjeta: la firma de Windows se simula.
 ```
 
 Genera `dist\FirmaPeru\FirmaPeru.exe` y el instalador
-`dist\installer\FirmaPeru-Setup-1.2.4.exe`. Opciones:
+`dist\installer\FirmaPeru-Setup-1.2.5.exe`. Opciones:
 
 - `-SinPruebas`: no ejecuta las pruebas antes de construir.
-- `-Version 1.2.4`: versión del instalador (predeterminada: `VERSION` de
+- `-Version 1.2.5`: versión del instalador (predeterminada: `VERSION` de
   `version.py`, la única fuente de la versión; cámbiela ahí al publicar).
 - `-SinInstalador`: solo genera la carpeta `dist\FirmaPeru`; para distribuirla,
   copie la carpeta completa.
@@ -264,7 +267,7 @@ Qué hace el instalador:
 Instalación silenciosa (por ejemplo, para distribuirlo con un script):
 
 ```powershell
-.\FirmaPeru-Setup-1.2.4.exe /VERYSILENT /SUPPRESSMSGBOXES
+.\FirmaPeru-Setup-1.2.5.exe /VERYSILENT /SUPPRESSMSGBOXES
 ```
 
 Para desinstalar, use **Configuración > Aplicaciones > Aplicaciones instaladas >

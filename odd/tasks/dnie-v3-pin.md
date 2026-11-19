@@ -57,8 +57,21 @@ DNIe V1/V2 (CJCOP3, ciamd.dll) is not affected: one PIN works there.
   - Pre-existing, unrelated: `tests/test_diagnostico_dnie.py::test_recolectar_hechos_nunca_lanza` reads WinSCard for real and faulthandler prints «Windows fatal exception: code 0x8010002e» (no readers). It is not an access violation, and the test passes.
   - Not verifiable without a V3 card: whether the KSP shows its prompt (and accepts the PIN) on a handle that already received `SmartCardPin`; which code a cancelled V3 prompt returns.
   - Commit: `bc5a0b6` feat: fall back to the Windows PIN prompt per page when the DNIe refuses a silent PIN.
-- [ ] T2 — PKCS#11 single-PIN path for DNIe V3.0.
-  - Route: delegated writer, after T1.
+- [x] T2 — PKCS#11 single-PIN path for DNIe V3.0. Version 1.2.5, installer.
+  - Route: delegated writer. Trigger: preparation reading of `dnie_cng.py`, `app.py` and the test fakes, plus 2+ non-trivial files (new binding module, app integration, tests).
+  - RED: `tests/test_dnie_pkcs11.py`, `tests/test_lote.py` and `tests/test_app.py` failed to collect (`ModuleNotFoundError: dnie_pkcs11`); `tests/test_dnie_cng.py::test_el_firmante_de_sesion_delega_la_firma_en_su_respaldo` failed (`dnie_cng` had no `FirmanteDeSesion`).
+  - GREEN: `python -m pytest -q` → 369 passed (326 before; 43 new). No access violation; only the pre-existing WinSCard 0x8010002E faulthandler note. `node --check ui/app.js` → OK. `build.ps1` → its test run 369 passed; `dist\installer\FirmaPeru-Setup-1.2.5.exe` built. The IDEMIA DLL is not bundled (loaded at runtime from Program Files).
+  - Smoke check on the dev PC (real `idplug-pkcs11.dll` 64-bit, outside pytest, no `C_Login`): Cryptoki 2.40; the function list's own `C_GetFunctionList` entry equals the exported address, which confirms the `_pack_ = 1` layout; `C_Initialize` OK; 0 slots with and without token (no reader was connected at that moment); `C_Finalize` OK. `buscar_llave` → None («ningún token tiene el certificado elegido»), 671 ms including the DLL load.
+  - Implementation:
+    - `dnie_pkcs11.py` (new): ctypes Cryptoki binding (`CK_ULONG` 32-bit, packed structs, cdecl via `CFUNCTYPE` over `C_GetFunctionList`). `_Cryptoki` is the test seam. `ruta_modulo()`: `FIRMADOR_PKCS11` if set (a path that does not exist disables the path) or `%ProgramFiles%\IDEMIA\IDPlugClassic\DLLs\idplug-pkcs11.dll`. `buscar_llave(cert_der)`: no PIN; matches `CKO_CERTIFICATE`/`CKA_VALUE` against the certificate CNG chose and returns slot + `CKA_ID`; never raises. `SesionPkcs11`: one `C_Login(CKU_USER)`; finds `CKO_PRIVATE_KEY` by `CKA_ID`; reads `CKA_ALWAYS_AUTHENTICATE`; per signature `C_SignInit(CKM_RSA_PKCS)` → `C_Login(CKU_CONTEXT_SPECIFIC)` if needed → `C_Sign(DigestInfo || hash)` (sha256/384/512). PIN in a UTF-8 ctypes buffer, wiped on close and on a PIN error; `CKR_USER_ALREADY_LOGGED_IN` is OK; close always runs `C_Logout`, `C_CloseSession`, `C_Finalize`. PIN codes 0xA0–0xA4 map to the Windows codes the app already handles (0x8010006B wrong PIN; 0x8010006C for locked and expired), so the same message and batch stop apply.
+    - `abrir_sesion(llave, pin)` decides the path: CNG (returns None) when the key is not RSA, the module is missing, no token has the certificate, the token reports a PIN pad (`CKF_PROTECTED_AUTHENTICATION_PATH`), `CKM_RSA_PKCS` is not listed, anything fails before `C_Login`, or something fails after an accepted login (private key not found). It raises (no CNG) on a PIN error, on a token flagged `CKF_USER_PIN_LOCKED`, or when `C_Login` fails for a non-PIN reason, because the PIN may have reached the card.
+    - Mechanism decision: only `CKM_RSA_PKCS` (hash computed locally, as with CNG). `CKM_SHA256_RSA_PKCS` would need the full data instead of the digest, so it would change the signer seam; if the token does not list `CKM_RSA_PKCS`, the session falls back to CNG before the PIN is used and logs the mechanism list.
+    - `dnie_cng.FirmanteDeSesion` (was `_FirmanteDeSesion`): delegates the raw signature to any backend with `_firmar(firmante, resumen, algoritmo)`, `SesionFirma` or `SesionPkcs11`. No change to pyHanko integration or chain building.
+    - `app.py`: `_sesion_de_firma(llave, hwnd, pin)` used by single `cada_pagina` and the batch; tries PKCS#11 only with an app PIN and logs «Firma por PKCS#11 (IDEMIA): un solo PIN para todas las páginas». Without an app PIN nothing changes.
+    - Tests: `tests/test_dnie_pkcs11.py` (fake module: ABI sizes, DigestInfo, module path, lookup, one login + context login per signature, PIN errors, fallbacks, closing); app-level tests in `tests/test_lote.py` (batch and single document sign N pages with one PIN, wrong PIN stops with no CNG, unrecognised card and pre-login failure go to CNG); autouse `sin_pkcs11` in `tests/test_app.py` and `tests/test_lote.py` so no test loads the real DLL.
+    - README note in «Firma real en cada página». Version 1.2.5 (`version.py`, `installer/FirmaPeru.iss` ×2, README ×3).
+  - Not verifiable without a V3 card: whether the IDEMIA module recognises the V3 token and exposes the certificate with a `CKA_ID` shared by the private key; whether the signing key has `CKA_ALWAYS_AUTHENTICATE` (both cases are handled); whether `CKM_RSA_PKCS` is offered; whether context-specific login with the in-memory PIN is accepted or the module shows its own PIN dialog; real latency per page.
+  - Commits: `6ac4a13` feat: add a minimal PKCS#11 binding for the IDEMIA DNIe 3.0 module; integration commit below.
 
 ## Acceptance criteria
 
@@ -67,6 +80,11 @@ DNIe V1/V2 (CJCOP3, ciamd.dll) is not affected: one PIN works there.
   - Windows prompt cancelled → the run is cancelled with no file;
   - a PIN error in interactive mode → the run stops;
   - V1/V2 behavior is unchanged.
+- T2, tested with fakes:
+  - certificate match → PKCS#11 path, one `CKU_USER` login, a context-specific login before each signature only when `CKA_ALWAYS_AUTHENTICATE` is set;
+  - PIN error → the run stops, no CNG fallback, the PIN buffer is zeroed;
+  - module missing or no match → the CNG path is unchanged;
+  - sessions and the library are always closed.
 - The full suite passes and `node --check ui/app.js` is OK.
 - Field check (user, V3 card): T1 signs every page with a PIN prompt per page; T2 signs every page with one PIN entry.
 
@@ -78,3 +96,4 @@ DNIe V1/V2 (CJCOP3, ciamd.dll) is not affected: one PIN works there.
   - Change: before the Windows-prompt retry, the session frees the key handle that received `SmartCardPin`, opens a new one and assigns the same HWND. This removes the writer's risk #1, so the prompt does not inherit the silent PIN state.
   - Commit `cc76855`.
   - RED: 2 failed. GREEN: 326 passed. 1.2.4 rebuilt (its test run: 326 passed).
+- 2026-11-19: T2 done (route: delegated writer). 369 passed; 1.2.5 installer built. Field check with a V3 card pending: one PIN for all pages through `idplug-pkcs11.dll`; the log line «Firma por PKCS#11 (IDEMIA)» confirms the path.

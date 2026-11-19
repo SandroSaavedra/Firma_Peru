@@ -18,7 +18,9 @@ from pyhanko.pdf_utils.reader import PdfFileReader
 
 import app
 import dnie_cng
+import dnie_pkcs11
 from conftest import _HASHES, A4, construir_pdf
+from test_dnie_pkcs11 import ModuloFalso, Token
 from validacion import validar_pdf
 
 CAJA = {"x": 0.5, "y": 0.05, "ancho": 0.4, "alto": 0.1}
@@ -36,6 +38,12 @@ class Cng:
         self.silenciosas = []  # si cada intento fue sin el cuadro de Windows (PIN provisto)
         self.fallos = {}  # n.º de intento (1, 2, ...) -> excepción a lanzar
         self.despues = {}  # n.º de intento -> función a ejecutar tras firmar
+
+
+@pytest.fixture(autouse=True)
+def sin_pkcs11(monkeypatch):
+    """Sin el módulo PKCS#11 de IDEMIA: las pruebas nunca cargan la DLL real."""
+    monkeypatch.setattr(dnie_pkcs11, "ruta_modulo", lambda: None)
 
 
 @pytest.fixture
@@ -696,3 +704,106 @@ def test_firmar_un_documento_sin_rechazo_silencioso_no_avisa(api, cng, tmp_path)
     assert r["ok"], r
     assert cng.silenciosas == [True] * 3
     assert not [e for e in api._ventana.eventos() if e["evento"] == "pin_por_pagina"]
+
+
+# --- DNIe 3.0 por PKCS#11 (módulo de IDEMIA): un solo PIN para todo
+
+
+@pytest.fixture
+def dnie_v3(monkeypatch, material_prueba):
+    """Módulo de IDEMIA simulado con un DNIe 3.0 (CKA_ALWAYS_AUTHENTICATE) que tiene el certificado de prueba."""
+    llave_privada, cert = material_prueba
+    return ModuloFalso({1: Token(cert.dump(), llave_privada)}).instalar(monkeypatch)
+
+
+USUARIO, CONTEXTO = dnie_pkcs11.CKU_USER, dnie_pkcs11.CKU_CONTEXT_SPECIFIC
+
+
+def test_lote_cada_pagina_dnie_v3_por_pkcs11_con_un_solo_pin(api, cng, dnie_v3, tmp_path, monkeypatch, caplog):
+    caplog.set_level("INFO")
+    monkeypatch.setattr(app, "INTERVALO_AVANCE_PAGINAS", 0)
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf", paginas=3)
+    api.agregar_rutas([str(r) for r in rutas])
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"] and len(r["firmados"]) == 2 and r["detenido"] is None, r
+    assert r["firmas_en_sesion"] == 6
+    # Un solo login con el PIN y el de contexto (mismo PIN, en memoria) antes de cada firma.
+    assert dnie_v3.logins == [USUARIO] + [CONTEXTO] * 6
+    assert (cng.proveedores, cng.firmas) == (0, [])  # CNG no se usa
+    for f in r["firmados"]:
+        v = validar_pdf(f["salida"], permitir_red=False)
+        assert len(v) == 3 and all(x["integridad"] == "intacta" for x in v)
+    assert "Firma por PKCS#11 (IDEMIA): un solo PIN para todas las páginas" in caplog.text
+    assert not [e for e in api._ventana.eventos() if e["evento"] == "pin_por_pagina"]
+    assert PIN not in caplog.text and all(PIN not in codigo for codigo in api._ventana.js)
+    assert dnie_v3.sesiones == {} and dnie_v3.inicializado == 0  # sesión y biblioteca cerradas
+
+
+def test_firmar_un_documento_dnie_v3_por_pkcs11_con_un_solo_pin(api, cng, dnie_v3, tmp_path):
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=4)
+    api.abrir_ruta(str(ruta))
+
+    r = api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"], r
+    assert r["paginas_selladas"] == [0, 1, 2, 3]
+    assert dnie_v3.logins == [USUARIO] + [CONTEXTO] * 4
+    assert cng.proveedores == 0
+    v = validar_pdf(r["salida"], permitir_red=False)
+    assert len(v) == 4 and all(x["integridad"] == "intacta" for x in v)
+    assert dnie_v3.sesiones == {} and dnie_v3.inicializado == 0
+
+
+def test_lote_pin_incorrecto_por_pkcs11_se_detiene_sin_probar_cng(api, cng, dnie_v3, tmp_path):
+    dnie_v3.pin = "000000"  # el PIN que escribió el usuario no es el del DNIe
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf", paginas=3)
+    api.agregar_rutas([str(r) for r in rutas])
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["detenido"] == "tarjeta" and r["mensaje"] == app._MENSAJES_CNG[0x8010006B]
+    assert dnie_v3.logins == [USUARIO]  # un solo intento del PIN
+    assert (cng.proveedores, cng.firmas) == (0, [])  # ni CNG con el mismo PIN
+    assert _estados(api) == [("uno.pdf", "pendiente"), ("dos.pdf", "pendiente")]
+    assert dnie_v3.sesiones == {} and dnie_v3.inicializado == 0
+
+
+def test_firmar_un_documento_pin_incorrecto_por_pkcs11_se_detiene_sin_probar_cng(api, cng, dnie_v3, tmp_path):
+    dnie_v3.pin = "000000"
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=3)
+    api.abrir_ruta(str(ruta))
+
+    r = api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r == {"ok": False, "mensaje": app._MENSAJES_CNG[0x8010006B]}
+    assert dnie_v3.logins == [USUARIO] and cng.proveedores == 0
+    assert not (tmp_path / "uno_firmado.pdf").exists()
+
+
+def test_dnie_que_el_modulo_no_reconoce_sigue_por_cng(api, cng, monkeypatch, tmp_path, caplog):
+    caplog.set_level("INFO")
+    modulo = ModuloFalso({1: Token(b"certificado de otro DNIe", None)}).instalar(monkeypatch)
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf", paginas=3)
+    api.agregar_rutas([str(r) for r in rutas])
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"] and len(r["firmados"]) == 2, r
+    assert modulo.logins == []
+    assert cng.silenciosas == [True] * 6  # la vía CNG de siempre, con el PIN de la aplicación
+    assert "Firma por PKCS#11" not in caplog.text
+
+
+def test_fallo_de_pkcs11_antes_del_login_sigue_por_cng(api, cng, dnie_v3, tmp_path):
+    dnie_v3.mecanismos_ = [dnie_pkcs11.CKM_SHA256_RSA_PKCS]  # sin CKM_RSA_PKCS
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=3)
+    api.abrir_ruta(str(ruta))
+
+    r = api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"], r
+    assert dnie_v3.logins == []
+    assert cng.silenciosas == [True] * 3
+
+
+def test_sin_pin_de_la_aplicacion_no_se_prueba_pkcs11(api, cng, dnie_v3, tmp_path):
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=2)
+    api.abrir_ruta(str(ruta))
+    assert api.firmar({"caja": CAJA, "paginas": "cada_pagina"})["ok"]
+    assert dnie_v3.cargas == 0 and cng.silenciosas == [False, False]

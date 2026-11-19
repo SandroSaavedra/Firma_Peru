@@ -12,9 +12,16 @@ import pytest
 from pyhanko.pdf_utils.reader import PdfFileReader
 
 import app
+import dnie_pkcs11
 
 # Valores de app.py antes de que el fixture `appdata` (conftest) los reemplace en cada prueba.
 LOGO_INICIAL_ORIGINAL = app.LOGO_INICIAL
+
+
+@pytest.fixture(autouse=True)
+def sin_pkcs11(monkeypatch):
+    """Sin el módulo PKCS#11 de IDEMIA: las pruebas nunca cargan la DLL real."""
+    monkeypatch.setattr(dnie_pkcs11, "ruta_modulo", lambda: None)
 
 
 @pytest.fixture

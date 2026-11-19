@@ -40,6 +40,7 @@ from pathlib import Path
 
 import webview
 
+import dnie_pkcs11
 from diagnostico_dnie import Certificado, diagnosticar
 from dnie_cng import ErrorCNG, FirmanteCNG, SesionFirma, describir_llave, elegir_llave_de_firma
 from firma_pdf import (
@@ -1154,7 +1155,7 @@ class Api:
             antes = time.monotonic()
             if opts.paginas == "cada_pagina":
                 # Una firma por página con la llave abierta UNA vez; con PIN, sin cuadros de Windows.
-                sesion = SesionFirma(llave, hwnd, pin=pin, al_pedir_pin_por_firma=self._avisar_pin_por_pagina)
+                sesion = self._sesion_de_firma(llave, hwnd, pin)
                 logger.info(
                     "Firma: firma real en cada página de %s (PIN provisto: %s; %s; ventana asociada: %s).",
                     self._pdf["nombre"], "sí" if pin else "no",
@@ -1317,6 +1318,23 @@ class Api:
         except Exception:  # noqa: BLE001 - el avance es informativo
             logger.debug("No se pudo enviar el avance del lote", exc_info=True)
 
+    def _sesion_de_firma(self, llave, hwnd, pin: str | None):
+        """
+        Sesión para firmar muchas veces con la llave abierta una vez. Con el PIN
+        de la aplicación se prueba antes PKCS#11 (módulo de IDEMIA del DNIe 3.0):
+        si el DNIe está ahí, un solo PIN para todas las páginas y documentos.
+        Si no (sin módulo, sin coincidencia o un fallo antes del login), la
+        sesión CNG de siempre, que pasa al PIN de Windows por página si el DNIe
+        no acepta el PIN en silencio. Un PIN rechazado por PKCS#11 lanza su
+        error y no se prueba CNG: sería otro intento del PIN.
+        """
+        if pin:
+            sesion = dnie_pkcs11.abrir_sesion(llave, pin)
+            if sesion is not None:
+                logger.info("Firma por PKCS#11 (IDEMIA): un solo PIN para todas las páginas.")
+                return sesion
+        return SesionFirma(llave, hwnd, pin=pin, al_pedir_pin_por_firma=self._avisar_pin_por_pagina)
+
     def _avisar_pin_por_pagina(self):
         """
         La sesión CNG pasó al PIN de Windows en cada firma (el DNIe no acepta el
@@ -1388,10 +1406,11 @@ class Api:
             llave = elegir_llave_de_firma()
             logger.info("Lote: llave elegida en %d ms (%s).", _ms(inicio_lote), describir_llave(llave))
             hwnd = self._hwnd()
-            sesion = SesionFirma(llave, hwnd, pin=pin, al_pedir_pin_por_firma=self._avisar_pin_por_pagina)
+            sesion = self._sesion_de_firma(llave, hwnd, pin)
             pin = None  # la sesión lo guarda en su búfer y lo borra al cerrar
             logger.info(
-                "Lote: se abre la sesión CNG; %s (PIN provisto: %s; ventana asociada: %s).",
+                "Lote: se abre la sesión %s; %s (PIN provisto: %s; ventana asociada: %s).",
+                "PKCS#11" if isinstance(sesion, dnie_pkcs11.SesionPkcs11) else "CNG",
                 "no se pedirá el PIN a Windows" if pin_provisto else "se solicitará el PIN a Windows",
                 "sí" if pin_provisto else "no",
                 "sí" if hwnd else "no",
