@@ -848,3 +848,62 @@ def test_si_winscard_falla_se_prueba_pkcs11(api, cng, dnie_v3, tmp_path, monkeyp
     assert api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})["ok"]
     assert dnie_v3.cargas > 0
 
+
+# --- firma real en cada página por partes ---------------------------------------
+
+
+@pytest.fixture
+def partes_de_3(monkeypatch):
+    import firma_pdf
+
+    monkeypatch.setattr(firma_pdf, "PAGINAS_POR_PARTE", 3)
+    monkeypatch.setattr(app, "INTERVALO_AVANCE_PAGINAS", 0)
+    return firma_pdf
+
+
+def test_lote_cada_pagina_divide_los_documentos_largos(api, cng, tmp_path, partes_de_3):
+    (largo,) = _pdfs(tmp_path, "largo.pdf", paginas=7)
+    (corto,) = _pdfs(tmp_path, "corto.pdf", paginas=3)
+    api.agregar_rutas([str(largo), str(corto)])
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"] and r["detenido"] is None and r["errores"] == [], r
+    assert (cng.proveedores, cng.llaves) == (1, 1)  # una sola sesión para las partes y los documentos
+    assert len(cng.firmas) == 10
+    # El documento largo cuenta como UNO, con su carpeta y sus partes.
+    primero, segundo = r["firmados"]
+    carpeta = tmp_path / "largo_firmado"
+    assert primero["salida"] == str(carpeta)
+    assert primero["partes"] == [str(carpeta / f"largo_parte0{n}de03_firmado.pdf") for n in (1, 2, 3)]
+    assert segundo["salida"] == str(tmp_path / "corto_firmado.pdf") and segundo["partes"] == []
+    for parte, paginas in zip(primero["partes"], (3, 3, 1)):
+        v = validar_pdf(parte, permitir_red=False)
+        assert len(v) == paginas and all(x["integridad"] == "intacta" for x in v)
+
+    eventos = api._ventana.eventos()
+    paginas = [(e["indice"], e["hechas"], e.get("parte"), e.get("partes")) for e in eventos if e["evento"] == "paginas"]
+    assert paginas[0] == (1, 0, 1, 3) and (1, 4, 2, 3) in paginas and (1, 7, 3, 3) in paginas
+    assert [p for p in paginas if p[0] == 2] == [(2, h, None, None) for h in range(4)]
+    assert eventos[-1]["resumen"]["firmados"][0]["partes"] == primero["partes"]
+
+
+def test_lote_documento_firmado_largo_queda_con_error_y_sigue(api, cng, tmp_path, partes_de_3):
+    (uno,) = _pdfs(tmp_path, "uno.pdf", paginas=4)
+    api.abrir_ruta(str(uno))
+    primera = api.firmar({"caja": CAJA, "paginas": "todas"})
+    assert primera["ok"], primera
+    previo = tmp_path / "previo.pdf"
+    shutil.copy(primera["salida"], previo)
+    (corto,) = _pdfs(tmp_path, "corto.pdf", paginas=3)
+    api.vaciar_cola(True)
+    api.agregar_rutas([str(previo), str(corto)])
+    firmas_antes = len(cng.firmas)
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"] and r["detenido"] is None, r
+    assert r["errores"] == [
+        {"id": r["errores"][0]["id"], "nombre": "previo.pdf", "mensaje": partes_de_3.mensaje_sin_division(4, 1)}
+    ]
+    assert [f["nombre"] for f in r["firmados"]] == ["corto.pdf"]
+    assert len(cng.firmas) - firmas_antes == 3  # solo las páginas del documento corto
+    assert not (tmp_path / "previo_firmado").exists()

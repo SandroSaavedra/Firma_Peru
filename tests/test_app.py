@@ -1041,3 +1041,73 @@ def test_la_sesion_avisa_a_la_interfaz_cuando_pide_el_pin_en_cada_pagina(api, pd
     api.abrir_ruta(str(pdf_multipagina))
     assert api.firmar({"paginas": "cada_pagina", "pin": PIN})["ok"]
     assert {"evento": "pin_por_pagina"} in ventana.eventos()
+
+
+# --- firma real en cada página por partes -------------------------------------
+
+
+def _pdf_de(carpeta: Path, paginas: int, nombre: str = "expediente.pdf") -> Path:
+    from conftest import A4, construir_pdf
+
+    ruta = carpeta / nombre
+    ruta.write_bytes(construir_pdf([{"media_box": A4}] * paginas))
+    return ruta
+
+
+@pytest.fixture
+def partes_de_3(monkeypatch):
+    import firma_pdf
+
+    monkeypatch.setattr(firma_pdf, "PAGINAS_POR_PARTE", 3)
+    return firma_pdf
+
+
+def test_firmar_un_documento_largo_lo_divide_en_partes(api, tmp_path, sesion_con_pin, partes_de_3, monkeypatch, caplog):
+    caplog.set_level("INFO")
+    ventana = _VentanaConAvance()
+    api._asignar_ventana(ventana)
+    monkeypatch.setattr(api, "_hwnd", lambda: None)
+    info = api.abrir_ruta(str(_pdf_de(tmp_path, 7)))
+    assert info["paginas_por_parte"] == 3 and info["no_dividir"] is None
+
+    r = api.firmar({"paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"], r
+    carpeta = tmp_path / "expediente_firmado"
+    assert r["carpeta"] == r["salida"] == str(carpeta) and r["nombre"] == "expediente_firmado"
+    assert r["partes"] == [str(carpeta / f"expediente_parte0{n}de03_firmado.pdf") for n in (1, 2, 3)]
+    assert len(sesion_con_pin) == 1  # una sola sesión (un solo PIN) para todas las partes
+    # Avance: páginas de todo el documento más la parte en curso.
+    avance = [(e["hechas"], e["total"], e["parte"], e["partes"]) for e in ventana.eventos() if e["evento"] == "paginas"]
+    assert avance[0] == (0, 7, 1, 3) and avance[-1] == (7, 7, 3, 3)
+    assert (3, 7, 2, 3) in avance and (6, 7, 3, 3) in avance
+    assert PIN not in caplog.text and all(PIN not in codigo for codigo in ventana.js)
+    assert "en 3 parte(s) de hasta 3 (1-3, 4-6, 7-7)" in _lineas(caplog)
+    assert "Firma por partes terminada" in _lineas(caplog)
+
+    # La cola muestra la carpeta; las partes se pueden mostrar en el Explorador.
+    assert api.obtener_cola()["cola"][0]["salida"] == str(carpeta)
+    llamadas = []
+    monkeypatch.setattr(app.subprocess, "Popen", lambda cmd, *a, **k: llamadas.append(cmd))
+    assert api.mostrar_en_carpeta(r["partes"][0]) == {"ok": True}
+    assert llamadas == [f'explorer /select,"{Path(r["partes"][0]).resolve()}"']
+    for parte, paginas in zip(r["partes"], (3, 3, 1)):
+        v = api.validar(parte)
+        assert v["ok"] and len(v["firmas"]) == paginas
+        assert all(f["integridad"] == "intacta" for f in v["firmas"])
+
+
+def test_documento_firmado_largo_se_rechaza_sin_abrir_la_llave(api, tmp_path, sesion_con_pin, partes_de_3, monkeypatch):
+    api.abrir_ruta(str(_pdf_de(tmp_path, 4)))
+    primera = api.firmar({"paginas": "todas"})
+    assert primera["ok"], primera
+    info = api.abrir_ruta(primera["salida"])
+    esperado = partes_de_3.mensaje_sin_division(4, 1)
+    assert esperado and info["no_dividir"] == esperado  # la interfaz lo avisa antes de pedir el PIN
+
+    llaves = []
+    monkeypatch.setattr(app, "elegir_llave_de_firma", lambda filtro=None: llaves.append(1))
+    r = api.firmar({"paginas": "cada_pagina", "pin": PIN})
+    assert r == {"ok": False, "mensaje": esperado}
+    assert llaves == [] and sesion_con_pin == []  # ni la llave ni el PIN se usaron
+    assert not (tmp_path / "expediente_firmado_firmado").exists()
+    assert not (tmp_path / "expediente_firmado_firmado.pdf").exists()

@@ -42,6 +42,7 @@ import webview
 
 import diagnostico_dnie
 import dnie_pkcs11
+import firma_pdf
 from diagnostico_dnie import Certificado, diagnosticar
 from dnie_cng import ErrorCNG, FirmanteCNG, SesionFirma, describir_llave, elegir_llave_de_firma
 from firma_pdf import (
@@ -54,6 +55,7 @@ from firma_pdf import (
     analizar_pdf,
     firmar_pdf,
     fondo_blanco_a_transparente,
+    mensaje_sin_division,
     recortar_margenes,
 )
 from registro import carpeta_registros, configurar_registro
@@ -679,6 +681,10 @@ class Api:
             "firmas": list(item["firmas"]),
             "docmdp": item["docmdp"],
             "rotaciones": list(item["rotaciones"]),
+            # «Firma real en cada página»: páginas por parte de un documento largo y,
+            # si este no se puede dividir (ya tiene firmas), el motivo para la interfaz.
+            "paginas_por_parte": firma_pdf.PAGINAS_POR_PARTE,
+            "no_dividir": mensaje_sin_division(item["paginas"], len(item["firmas"])),
             "salida_sugerida": str(self._salida_sugerida()),
             "salidas_sugeridas": {t: str(self._salida_sugerida(t)) for t in SUFIJOS_SALIDA},
         }
@@ -1149,6 +1155,11 @@ class Api:
             logger.info("Firma: opciones listas en %d ms (%s; salida %s).", _ms(inicio), _resumen_opts(opts), salida.name)
             if salida.suffix.lower() != ".pdf":
                 raise ErrorFirma("El archivo de salida debe tener extensión .pdf.")
+            if opts.paginas == "cada_pagina" and item:
+                # Un PDF firmado demasiado largo para dividirlo: se rechaza antes de abrir la llave y usar el PIN.
+                motivo = mensaje_sin_division(item["paginas"], len(item["firmas"]))
+                if motivo:
+                    raise ErrorFirma(motivo)
 
             llave = elegir_llave_de_firma()
             logger.info("Firma: llave elegida en %d ms (%s).", _ms(inicio), describir_llave(llave))
@@ -1176,8 +1187,9 @@ class Api:
                 )
                 resultado = firmar_pdf(entrada, salida, signer, llave.titular, opts)
             logger.info(
-                "Firma: firmar_pdf terminó en %d ms: %s (modo=%s, páginas selladas=%d); total %d ms.",
-                _ms(antes), Path(resultado.salida).name, resultado.modo, len(resultado.paginas_selladas), _ms(inicio),
+                "Firma: firmar_pdf terminó en %d ms: %s (modo=%s, páginas selladas=%d, partes=%d); total %d ms.",
+                _ms(antes), Path(resultado.salida).name, resultado.modo, len(resultado.paginas_selladas),
+                len(resultado.partes) or 1, _ms(inicio),
             )
         except FirmaCancelada:
             logger.info("Firma cancelada por el usuario tras %d ms; no se escribió ningún archivo.", _ms(inicio))
@@ -1199,10 +1211,15 @@ class Api:
             logger.exception("Firma fallida tras %d ms: %s", _ms(inicio), describir_error(e))
             self._marcar_tras_error(item, e)
             return {"ok": False, "mensaje": mensaje_de_error(e)}
-        self._generados.add(str(Path(resultado.salida).resolve()))
+        self._registrar_generados(resultado)
         if item:
             self._marcar(item, "firmado", None, resultado.salida)
         return {"ok": True, "nombre": Path(resultado.salida).name, **asdict(resultado)}
+
+    def _registrar_generados(self, resultado):
+        """Lo que la interfaz puede abrir o mostrar: el PDF firmado o, si se dividió, la carpeta y cada parte."""
+        for ruta in (resultado.salida, *resultado.partes):
+            self._generados.add(str(Path(ruta).resolve()))
 
     def _marcar_tras_error(self, item: dict | None, error: Exception):
         if item is None:
@@ -1347,18 +1364,26 @@ class Api:
     def _avance_paginas(self, base: dict | None = None):
         """
         `progreso(hechas, total)` para `firmar_pdf` con «cada_pagina»: envía el
-        evento "paginas" a la interfaz (el primero, el último y, entre medio,
-        uno cada INTERVALO_AVANCE_PAGINAS s) y devuelve False si se pidió cancelar.
+        evento "paginas" a la interfaz (el primero, el último, el de cada parte
+        nueva y, entre medio, uno cada INTERVALO_AVANCE_PAGINAS s) y devuelve
+        False si se pidió cancelar. Un documento dividido además envía la parte
+        en curso (`parte`, `partes`); `hechas` y `total` son de todo el documento.
         """
         base = base or {}
         ultimo = None
+        parte_anterior = None
 
-        def progreso(hechas: int, total: int) -> bool:
-            nonlocal ultimo
+        def progreso(hechas: int, total: int, parte: int | None = None, partes: int | None = None) -> bool:
+            nonlocal ultimo, parte_anterior
             ahora = time.monotonic()
-            if hechas in (0, total) or ultimo is None or ahora - ultimo >= INTERVALO_AVANCE_PAGINAS:
+            nueva_parte = parte != parte_anterior
+            parte_anterior = parte
+            if hechas in (0, total) or nueva_parte or ultimo is None or ahora - ultimo >= INTERVALO_AVANCE_PAGINAS:
                 ultimo = ahora
-                self._emitir_progreso({**base, "evento": "paginas", "hechas": hechas, "total": total})
+                evento = {**base, "evento": "paginas", "hechas": hechas, "total": total}
+                if parte is not None:
+                    evento.update(parte=parte, partes=partes)
+                self._emitir_progreso(evento)
             if hechas and (hechas % 50 == 0 or hechas == total):
                 logger.info("Firma por página: %d de %d página(s) firmadas.", hechas, total)
             return not self._cancelar_lote.is_set()
@@ -1471,14 +1496,19 @@ class Api:
                                 break
                             continue
                         logger.info(
-                            "Lote: documento %d de %d (%s) firmado en %d ms: %s (modo=%s).",
+                            "Lote: documento %d de %d (%s) firmado en %d ms: %s (modo=%s, partes=%d).",
                             indice, total, item["nombre"], _ms(antes), Path(resultado.salida).name, resultado.modo,
+                            len(resultado.partes) or 1,
                         )
                         procesados.add(item["id"])
-                        self._generados.add(str(Path(resultado.salida).resolve()))
+                        self._registrar_generados(resultado)
                         self._marcar(item, "firmado", None, resultado.salida)
+                        # Un documento dividido cuenta como uno: `salida` es su carpeta y `partes`, sus archivos.
                         firmados.append(
-                            {"id": item["id"], "nombre": item["nombre"], "salida": resultado.salida, "modo": resultado.modo}
+                            {
+                                "id": item["id"], "nombre": item["nombre"], "salida": resultado.salida,
+                                "modo": resultado.modo, "partes": resultado.partes,
+                            }
                         )
                         self._emitir_progreso({**base, "estado": "firmado", "salida": resultado.salida})
             finally:

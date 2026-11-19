@@ -1670,9 +1670,20 @@ async function firmar() {
   // «Firma real en cada página»: el PIN se pide UNA vez aquí y no se guarda.
   let pin = null;
   if (opciones.paginas === "cada_pagina") {
+    if (estado.info.no_dividir) {
+      // Ya tiene firmas y es demasiado largo para dividirlo: se avisa sin pedir el PIN.
+      registrar("info", "Firmar: el PDF ya tiene firmas y supera el límite de páginas por parte; no se pide el PIN.");
+      mostrarDialogo({
+        tipo: "error",
+        titulo: "No se puede firmar",
+        texto: estado.info.no_dividir,
+        acciones: [{ texto: "Cerrar", primario: true, accion: cerrarDialogo }],
+      });
+      return;
+    }
     registrar("info", "Firmar: se pide el PIN en la aplicación (firma real en cada página).");
     pin = await pedirPin(
-      `Se firmará cada una de las ${plural(estado.total, "página", "páginas")} con su propia firma digital. Escriba el PIN una sola vez.`,
+      `Se firmará cada una de las ${plural(estado.total, "página", "páginas")} con su propia firma digital.${textoPartes(estado.total)} Escriba el PIN una sola vez.`,
     );
     if (pin === null) {
       registrar("info", "Firmar: ingreso del PIN cancelado; no se firma.");
@@ -1706,7 +1717,19 @@ async function firmar() {
     if (r.mensaje) aviso(r.mensaje);
     return;
   }
-  if (r.ok) {
+  if (r.ok && r.partes && r.partes.length) {
+    // Documento largo dividido en partes: una carpeta con un PDF por parte.
+    mostrarDialogo({
+      tipo: "ok",
+      titulo: "Documento firmado en partes",
+      texto: `${plural(r.paginas_selladas.length, "página firmada", "páginas firmadas")}, cada una con su propia firma digital, en ${plural(r.partes.length, "parte", "partes")}. Guardadas en:`,
+      ruta: r.carpeta,
+      acciones: [
+        { texto: "Abrir carpeta", icono: "carpeta", primario: true, accion: () => mostrarEnCarpeta(r.partes[0]) },
+        { texto: "Cerrar", accion: cerrarDialogo },
+      ],
+    });
+  } else if (r.ok) {
     const previas = r.firmas_previas > 0 ? ` El PDF ya tenía ${plural(r.firmas_previas, "firma", "firmas")}.` : "";
     const sellos =
       opciones.paginas === "cada_pagina"
@@ -1810,10 +1833,21 @@ function notaDialogoLote(l) {
   return l.pinPorPagina ? NOTA_PIN_POR_PAGINA : l.pinProvisto ? NOTA_PIN_PROVISTO : NOTA_PIN_LOTE;
 }
 
-// «Firmando página X de N» de la firma real en cada página (null si no aplica).
+// «Firmando página X de N» de la firma real en cada página (null si no aplica);
+// en un documento dividido, «Parte X de Y · Firmando página A de B».
 function textoPaginas(l) {
   const p = l.paginas;
-  return p && p.total ? `Firmando página ${Math.min(p.hechas + 1, p.total)} de ${p.total}` : null;
+  if (!p || !p.total) return null;
+  const pagina = `Firmando página ${Math.min(p.hechas + 1, p.total)} de ${p.total}`;
+  return p.partes > 1 ? `Parte ${p.parte} de ${p.partes} · ${pagina}` : pagina;
+}
+
+// Aviso del diálogo del PIN cuando el documento se dividirá en partes ("" si no).
+function textoPartes(paginas) {
+  const porParte = estado.info && estado.info.paginas_por_parte;
+  if (!porParte || paginas <= porParte) return "";
+  const partes = Math.ceil(paginas / porParte);
+  return ` Como tiene más de ${porParte} páginas, se guardará en ${partes} partes de hasta ${porParte} páginas, dentro de una carpeta.`;
 }
 
 function actualizarDialogoLote() {
@@ -1874,7 +1908,7 @@ function progresoLote(evento) {
   if (evento.evento === "paginas") {
     // Firma real en cada página: avance dentro del documento en curso.
     if (estado.lote) {
-      estado.lote.paginas = { hechas: evento.hechas, total: evento.total };
+      estado.lote.paginas = { hechas: evento.hechas, total: evento.total, parte: evento.parte, partes: evento.partes };
       actualizarDialogoLote();
     }
     return;
@@ -1906,7 +1940,12 @@ function mostrarResumenLote(r) {
   // Dónde quedó cada documento firmado, y luego los problemas.
   const lista = [
     ...r.firmados.map((f) =>
-      h("li", { class: "salida-lote" }, h("strong", {}, f.nombre), h("span", { class: "salida-ruta" }, f.salida)),
+      h(
+        "li",
+        { class: "salida-lote" },
+        h("strong", {}, f.partes && f.partes.length ? `${f.nombre} (${plural(f.partes.length, "parte", "partes")})` : f.nombre),
+        h("span", { class: "salida-ruta" }, f.salida),
+      ),
     ),
     ...[...r.errores, ...r.omitidos].map((e) => h("li", { class: "salida-error" }, `${e.nombre}: ${e.mensaje}`)),
   ];

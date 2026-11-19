@@ -239,3 +239,31 @@ def test_aviso_de_pin_en_cada_pagina_esta_conectado():
     assert re.search(r"el\.dialogoNota\.textContent\s*=\s*NOTA_PIN_POR_PAGINA", js)
     # y el diálogo del lote la conserva si se vuelve a dibujar
     assert re.search(r"pinPorPagina\s*\?\s*NOTA_PIN_POR_PAGINA", js)
+
+
+# --- firma real en cada página por partes ---------------------------------------
+
+
+def test_avance_por_partes_muestra_la_parte_y_la_pagina():
+    js = _js()
+    texto = _funcion(js, "function textoPaginas(l)")
+    assert "Parte ${p.parte} de ${p.partes} · ${pagina}" in texto and "Firmando página ${" in texto
+    cuerpo = _funcion(js, "function progresoLote(evento)")
+    assert "parte: evento.parte" in cuerpo and "partes: evento.partes" in cuerpo
+
+
+def test_documento_firmado_largo_se_rechaza_antes_de_pedir_el_pin():
+    cuerpo = _funcion(_js(), "async function firmar()")
+    rechazo = cuerpo.index("estado.info.no_dividir")
+    assert rechazo < cuerpo.index("pedirPin(")
+    assert re.search(r'titulo: "No se puede firmar",\s*texto: estado\.info\.no_dividir', cuerpo)
+
+
+def test_resultado_por_partes_muestra_la_carpeta_y_abrir_carpeta():
+    js = _js()
+    cuerpo = _funcion(js, "async function firmar()")
+    assert "r.partes.length" in cuerpo and "ruta: r.carpeta" in cuerpo
+    assert re.search(r'texto: "Abrir carpeta", icono: "carpeta", primario: true, accion: \(\) => mostrarEnCarpeta\(r\.partes\[0\]\)', cuerpo)
+    # En el lote, un documento dividido cuenta como uno, con su número de partes.
+    resumen = _funcion(js, "function mostrarResumenLote(r)")
+    assert "f.partes" in resumen and '"partes"' in resumen

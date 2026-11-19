@@ -111,6 +111,38 @@ marcada; **Todas las páginas** (una firma y el sello repetido en las demás) y
 - Funciona también en PDF ya firmados (las firmas anteriores siguen válidas) y
   en documentos certificados que admiten cambios.
 
+#### Documentos de más de 75 páginas: se firman en partes
+
+Con cientos de firmas en un mismo archivo los lectores dejan de validarlas: en
+pruebas con un expediente real de 597 páginas firmadas, Acrobat se quedaba
+«cargando» o marcaba algunas firmas como «modificado o dañado», y ReFirma ni
+siquiera las listaba. Con 150 firmas por archivo, Acrobat y ReFirma las
+validaron todas. Por eso, si un documento **sin firmas** tiene más de 75
+páginas, la aplicación lo divide en partes de hasta **75 páginas
+consecutivas** y firma cada página de cada parte, con el mismo PIN y la misma
+sesión del DNIe. Con dos firmantes, cada parte llega a 150 firmas.
+
+- Las partes se guardan en una **carpeta** junto al destino, con el nombre del
+  documento: `expediente_firmado\expediente_parte01de08_firmado.pdf`,
+  `expediente_parte02de08_firmado.pdf`… (con visto bueno, `_vb` en lugar de
+  `_firmado`). El número de parte lleva ceros a la izquierda según el total.
+  Si la carpeta ya existe, se usa `expediente_firmado (2)`.
+- Mientras firma se ve «Parte X de Y · Firmando página A de B». Al terminar,
+  **Abrir carpeta** muestra las partes en el Explorador. En un lote, cada
+  documento largo cuenta como un documento firmado, con su carpeta y su número
+  de partes.
+- Si se cancela o algo falla, no queda ninguna carpeta ni parte a medias.
+- Cada parte es un PDF nuevo con las mismas páginas. Los marcadores y los
+  campos de formulario del original pueden no pasar a las partes.
+- Un documento de 75 páginas o menos se firma como siempre, en un solo archivo.
+- **Un PDF que ya tiene firmas y más de 75 páginas no se puede dividir**:
+  dividirlo invalidaría esas firmas. Al abrirlo solo, la aplicación lo avisa
+  antes de pedir el PIN (en un lote, ese documento queda con error y los demás
+  se firman): «Este PDF ya tiene firmas y más de 75 hojas: no se puede dividir sin
+  invalidarlas. Pida al primer firmante el expediente dividido en partes.». El
+  segundo firmante firma cada parte por separado (cada una tiene 75 páginas o
+  menos).
+
 La pestaña **Validar firmas** muestra, para cada firma, el firmante, la fecha,
 si el documento fue alterado, si hubo modificaciones posteriores y si el
 certificado es de confianza según los certificados raíz de Windows.
@@ -236,10 +268,10 @@ Las pruebas no usan la tarjeta: la firma de Windows se simula.
 ```
 
 Genera `dist\FirmaPeru\FirmaPeru.exe` y el instalador
-`dist\installer\FirmaPeru-Setup-1.2.5.exe`. Opciones:
+`dist\installer\FirmaPeru-Setup-1.2.6.exe`. Opciones:
 
 - `-SinPruebas`: no ejecuta las pruebas antes de construir.
-- `-Version 1.2.5`: versión del instalador (predeterminada: `VERSION` de
+- `-Version 1.2.6`: versión del instalador (predeterminada: `VERSION` de
   `version.py`, la única fuente de la versión; cámbiela ahí al publicar).
 - `-SinInstalador`: solo genera la carpeta `dist\FirmaPeru`; para distribuirla,
   copie la carpeta completa.
@@ -267,7 +299,7 @@ Qué hace el instalador:
 Instalación silenciosa (por ejemplo, para distribuirlo con un script):
 
 ```powershell
-.\FirmaPeru-Setup-1.2.5.exe /VERYSILENT /SUPPRESSMSGBOXES
+.\FirmaPeru-Setup-1.2.6.exe /VERYSILENT /SUPPRESSMSGBOXES
 ```
 
 Para desinstalar, use **Configuración > Aplicaciones > Aplicaciones instaladas >
