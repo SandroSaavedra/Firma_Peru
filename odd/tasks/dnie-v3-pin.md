@@ -74,3 +74,7 @@ DNIe V1/V2 (CJCOP3, ciamd.dll) is not affected: one PIN works there.
 
 - 2026-11-19: document created; T1 delegated.
 - 2026-11-19: T1 done (route: delegated writer). Field check with a V3 card pending.
+- 2026-11-19 (coordinator): the retry now runs on a clean key handle.
+  - Change: before the Windows-prompt retry, the session frees the key handle that received `SmartCardPin`, opens a new one and assigns the same HWND. This removes the writer's risk #1, so the prompt does not inherit the silent PIN state.
+  - Commit `cc76855`.
+  - RED: 2 failed. GREEN: 326 passed. 1.2.4 rebuilt (its test run: 326 passed).
