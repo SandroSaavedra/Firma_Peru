@@ -299,6 +299,7 @@ async function consultarDnie() {
     el.tarjeta.dataset.estado = "ok";
     el.dnieEstado.textContent = "DNIe listo para firmar";
     el.dnieTitular.textContent = r.titular;
+    el.dnieTitular.title = "";
     el.dnieEmisor.textContent = r.emisor || "—";
     el.dnieVence.textContent = fechaLegible(r.valido_hasta, false);
     el.dnieDetalle.hidden = false;
@@ -307,6 +308,8 @@ async function consultarDnie() {
     el.tarjeta.dataset.estado = "error";
     el.dnieEstado.textContent = "DNIe no disponible";
     el.dnieTitular.textContent = r.mensaje || "No se pudo leer el DNIe.";
+    // El código de Windows queda a mano (y en el registro) sin recargar el mensaje.
+    el.dnieTitular.title = r.codigo ? `Código ${r.codigo}` : "";
     el.dnieDetalle.hidden = true;
   }
   actualizarVistaPrevia();

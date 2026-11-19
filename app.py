@@ -18,6 +18,7 @@ import atexit
 import base64
 import binascii
 import ctypes
+import datetime
 import hashlib
 import io
 import json
@@ -39,6 +40,7 @@ from pathlib import Path
 
 import webview
 
+from diagnostico_dnie import Certificado, diagnosticar
 from dnie_cng import ErrorCNG, FirmanteCNG, SesionFirma, describir_llave, elegir_llave_de_firma
 from firma_pdf import (
     MOTIVOS_POR_TIPO,
@@ -125,6 +127,8 @@ def codigo_cng(error: Exception) -> int | None:
 
 def mensaje_de_error(error: Exception) -> str:
     """Convierte errores de CNG y de firma en un texto legible."""
+    if isinstance(error, ErrorCNG) and getattr(error, "diagnostico", None):
+        return str(error)  # ya es el mensaje del diagnóstico del DNIe
     if isinstance(error, ErrorCNG):
         codigo = codigo_cng(error)
         if codigo in _MENSAJES_CNG:
@@ -163,6 +167,11 @@ def describir_error(error: BaseException) -> str:
     except Exception:  # noqa: BLE001
         sufijo = ""
     return f"{type(error).__name__}: {texto}{sufijo}"
+
+
+def _ahora() -> datetime.datetime:
+    """Fecha y hora actual en UTC (punto de prueba)."""
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 def _ms(desde: float) -> int:
@@ -527,19 +536,40 @@ class Api:
 
     # --- DNIe -------------------------------------------------------------
 
+    @staticmethod
+    def _certificado_vencido(llave, hasta) -> str | None:
+        """Mensaje del diagnóstico si el certificado de firma ya venció; None si no (o si no se sabe)."""
+        try:
+            codigo, mensaje = diagnosticar(
+                certificados=[Certificado(es_de_firma=True, no_despues=hasta)], ahora=_ahora()
+            )
+        except Exception:  # noqa: BLE001 - sin diagnóstico se muestra el DNIe como siempre
+            logger.debug("No se pudo comprobar la vigencia del certificado", exc_info=True)
+            return None
+        if codigo != "certificado_vencido":
+            return None
+        logger.warning("DNIe: %s (%s)", mensaje, describir_llave(llave))
+        return mensaje
+
     def estado_dnie(self) -> dict:
         """Certificado de firma del DNIe. No pide PIN."""
         try:
             llave = elegir_llave_de_firma()
         except ErrorCNG as e:
             logger.warning("DNIe no disponible: %s", describir_error(e))
-            return {"ok": False, "mensaje": mensaje_de_error(e)}
+            respuesta = {"ok": False, "mensaje": mensaje_de_error(e)}
+            if isinstance(getattr(e, "codigo", None), int):
+                respuesta["codigo"] = f"0x{e.codigo & 0xFFFFFFFF:08X}"  # para el detalle de la tarjeta
+            return respuesta
         except Exception as e:  # noqa: BLE001
             logger.exception("estado_dnie")
             return {"ok": False, "mensaje": mensaje_de_error(e)}
         cert = llave.cert
         validez = cert["tbs_certificate"]["validity"]
         hasta = validez["not_after"].native
+        vencido = self._certificado_vencido(llave, hasta)
+        if vencido:
+            return {"ok": False, "mensaje": vencido}
         return {
             "ok": True,
             "titular": llave.titular,

@@ -17,6 +17,8 @@ from asn1crypto import algos, x509
 from pyhanko.sign import signers
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
+import diagnostico_dnie
+
 if sys.platform != "win32":
     raise ImportError("dnie_cng solo funciona en Windows")
 
@@ -116,11 +118,16 @@ _crypt32.CertCloseStore.restype = wintypes.BOOL
 
 
 class ErrorCNG(RuntimeError):
-    """Error de CNG / tarjeta. `codigo`: SECURITY_STATUS de Windows, si se conoce."""
+    """
+    Error de CNG / tarjeta. `codigo`: SECURITY_STATUS de Windows, si se conoce.
+    `diagnostico`: código de `diagnostico_dnie` cuando el mensaje ya es el del
+    diagnóstico (se muestra tal cual al usuario).
+    """
 
-    def __init__(self, mensaje: str = "", codigo: int | None = None):
+    def __init__(self, mensaje: str = "", codigo: int | None = None, diagnostico: str | None = None):
         super().__init__(mensaje)
         self.codigo = codigo
+        self.diagnostico = diagnostico
 
 
 def _verificar(status, operacion):
@@ -199,6 +206,7 @@ def listar_llaves() -> list[LlaveTarjeta]:
     proveedor = _abrir_proveedor()
     llaves = []
     enumeradas = 0
+    estado_fin = None  # NTE_NOT_FOUND si la enumeración terminó así
     estado = ctypes.c_void_p()
     try:
         while True:
@@ -215,6 +223,7 @@ def listar_llaves() -> list[LlaveTarjeta]:
                     PROVEEDOR_TARJETA,
                     enumeradas,
                 )
+                estado_fin = _NTE_NOT_FOUND
                 break
             try:
                 _verificar(status, "NCryptEnumKeys")
@@ -254,16 +263,65 @@ def listar_llaves() -> list[LlaveTarjeta]:
         _FreeObject(proveedor)
     logger.info("Llaves enumeradas: %d; con certificado: %d.", enumeradas, len(llaves))
     if not llaves:
-        raise ErrorCNG("No se encontró ninguna llave con certificado. ¿Está el DNIe insertado?")
+        # Con NTE_NOT_FOUND se conserva el código: es reintentable y el diagnóstico lo usa.
+        raise ErrorCNG("No se encontró ninguna llave con certificado. ¿Está el DNIe insertado?", codigo=estado_fin)
     return llaves
+
+
+# Puntos de prueba: las pruebas reemplazan la espera y la consulta a WinSCard.
+_dormir = time.sleep
+_recolectar_hechos = diagnostico_dnie.recolectar_hechos
+
+
+def _con_diagnostico(error: ErrorCNG) -> ErrorCNG:
+    """
+    El error con el mensaje del diagnóstico (WinSCard + código de la
+    enumeración), o el mismo error si el diagnóstico no concluye o falla.
+    """
+    try:
+        hechos = _recolectar_hechos()
+        codigo, mensaje = diagnostico_dnie.diagnosticar(
+            error_lectores=hechos.get("error_lectores"),
+            lectores=hechos.get("lectores"),
+            estado_llaves=error.codigo,
+        )
+        lectores = "; ".join(str(l) for l in hechos.get("lectores") or []) or "ninguno"
+        error_lectores = hechos.get("error_lectores")
+        logger.warning(
+            "Diagnóstico del DNIe: %s. Error original: %s (código %s). Lectores: %s. Error de WinSCard: %s.",
+            codigo,
+            error,
+            f"0x{error.codigo:08X}" if error.codigo is not None else "-",
+            lectores,
+            f"0x{error_lectores & 0xFFFFFFFF:08X}" if error_lectores else "-",
+        )
+    except Exception as e:  # noqa: BLE001 - el diagnóstico nunca oculta el error original
+        logger.warning("No se pudo diagnosticar el DNIe (%s: %s); se informa el error original.", type(e).__name__, e)
+        return error
+    if mensaje is None or codigo == "ok":
+        return error
+    return ErrorCNG(mensaje, codigo=error.codigo, diagnostico=codigo)
 
 
 def elegir_llave_de_firma(filtro: str | None = None) -> LlaveTarjeta:
     """
     Devuelve la llave de FIRMA (non_repudiation). Si se pasa `filtro`, se
     elige la llave cuyo titular contenga ese texto (sin distinguir mayúsculas).
+
+    Los errores pasajeros de la tarjeta al listar las llaves se reintentan
+    (`diagnostico_dnie.con_reintentos`). Si aun así falla, el error lleva el
+    mensaje del diagnóstico (falta el lector, la tarjeta, el software, los
+    certificados...). Nunca pide el PIN.
     """
-    llaves = listar_llaves()
+    try:
+        llaves = diagnostico_dnie.con_reintentos(
+            lambda: listar_llaves(), dormir=_dormir, descripcion="Listar las llaves del DNIe"
+        )
+    except ErrorCNG as e:
+        diagnosticado = _con_diagnostico(e)
+        if diagnosticado is e:
+            raise
+        raise diagnosticado from e
     if filtro:
         candidatas = [l for l in llaves if filtro.lower() in l.titular.lower()]
     else:
