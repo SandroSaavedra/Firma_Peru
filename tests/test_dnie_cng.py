@@ -1,5 +1,7 @@
 """Pruebas de `dnie_cng` que no necesitan la tarjeta."""
+import asyncio
 import ctypes
+import hashlib
 import logging
 
 import pytest
@@ -414,3 +416,22 @@ def test_rechazo_silencioso_reabre_la_llave_sin_el_pin_antes_del_cuadro_de_windo
     assert ("HWND Handle", 202, 0) in cng.llamadas
     assert ("pin", 202, 0) not in cng.llamadas
     assert len(abiertas) == 2
+
+
+# --- respaldo de firma enchufable (CNG o PKCS#11) --------------------------------
+
+
+def test_el_firmante_de_sesion_delega_la_firma_en_su_respaldo(monkeypatch, material_prueba):
+    monkeypatch.setattr(dnie_cng, "cadena_intermedia", lambda c: [])
+    recibido = []
+
+    class _Respaldo:
+        def _firmar(self, firmante, resumen, algoritmo):
+            recibido.append((firmante, resumen, algoritmo))
+            return b"FIRMA"
+
+    respaldo = _Respaldo()
+    firmante = dnie_cng.FirmanteDeSesion(dnie_cng.LlaveTarjeta("llave", 0, material_prueba[1]), None, respaldo)
+    assert asyncio.run(firmante.async_sign_raw(b"datos", "sha256")) == b"FIRMA"
+    assert recibido == [(firmante, hashlib.sha256(b"datos").digest(), "sha256")]
+    assert firmante.sesion is respaldo

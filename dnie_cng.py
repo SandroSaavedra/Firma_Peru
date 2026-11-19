@@ -14,7 +14,9 @@ sesión o en cuanto el PIN falla; nunca se registra, ni va en un error, ni se
 devuelve. Un PIN incorrecto o bloqueado detiene la sesión: no se reintenta.
 Si la tarjeta rechaza el PIN en silencio (NTE_SILENT_CONTEXT, p. ej. el DNIe
 3.0), la sesión borra el PIN y sigue con el cuadro del PIN de Windows en cada
-firma (`SesionFirma.pin_por_firma`).
+firma (`SesionFirma.pin_por_firma`). Con el PIN de la aplicación, el DNIe 3.0
+se firma antes por PKCS#11 si está el módulo de IDEMIA (`dnie_pkcs11`), con el
+mismo `FirmanteDeSesion`.
 
 Búsqueda de la llave (`listar_llaves`), en este orden y solo si la vía
 anterior no halló ninguna llave con certificado:
@@ -744,10 +746,16 @@ class FirmanteCNG(signers.Signer):
             pass  # sin ventana padre Windows igual muestra el cuadro del PIN
 
 
-class _FirmanteDeSesion(FirmanteCNG):
-    """FirmanteCNG que firma con la llave que mantiene abierta una `SesionFirma`."""
+class FirmanteDeSesion(FirmanteCNG):
+    """
+    FirmanteCNG cuya firma en bruto la hace un respaldo enchufable: cualquier
+    objeto con `_firmar(firmante, resumen, algoritmo) -> bytes`. Hoy son la
+    `SesionFirma` (CNG, con la llave que mantiene abierta) y la
+    `dnie_pkcs11.SesionPkcs11` (módulo PKCS#11 de IDEMIA). pyHanko, la cadena
+    de certificados y el tamaño de la firma son los mismos con los dos.
+    """
 
-    def __init__(self, llave: LlaveTarjeta, hwnd: int | None, sesion: "SesionFirma"):
+    def __init__(self, llave: LlaveTarjeta, hwnd: int | None, sesion):
         super().__init__(llave, hwnd=hwnd)
         self.sesion = sesion
 
@@ -796,7 +804,7 @@ class SesionFirma:
         self._hwnd = hwnd
         self._proveedor = None
         self._handle = None
-        self.firmante: _FirmanteDeSesion | None = None
+        self.firmante: FirmanteDeSesion | None = None
         self.firmas = 0  # firmas completadas en la sesión
         self.fallidas = 0  # intentos de firma que terminaron en error
         # Búfer mutable con el PIN (se borra con `_borrar_pin`); None = Windows pide el PIN.
@@ -814,7 +822,7 @@ class SesionFirma:
     def __enter__(self) -> FirmanteCNG:
         try:
             # El firmante (cadena de certificados) se arma antes de abrir los handles.
-            self.firmante = _FirmanteDeSesion(self._llave, self._hwnd, self)
+            self.firmante = FirmanteDeSesion(self._llave, self._hwnd, self)
             proveedor = _abrir_proveedor()
             try:
                 handle = _abrir_llave(proveedor, self._llave)
