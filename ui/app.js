@@ -764,9 +764,16 @@ function ajustesParaPython() {
   return salida;
 }
 
+// Un documento certificado (DocMDP 2 o 3) solo admite el sello en el campo de
+// firma; con firmas de aprobación previas se sella igual que sin firmas.
+function soloCampoDeFirma() {
+  return Boolean(estado.info) && estado.info.docmdp != null;
+}
+
 function configurarSegunFirmas() {
   const n = estado.info.firmas.length;
   const certificadoSinCambios = estado.info.docmdp === 1;
+  const soloCampo = soloCampoDeFirma();
   const radioTodas = document.querySelector('input[name="paginas"][value="todas"]');
   const radioUltima = document.querySelector('input[name="paginas"][value="ultima"]');
 
@@ -779,13 +786,17 @@ function configurarSegunFirmas() {
   if (certificadoSinCambios) {
     el.notaFirmasTexto.textContent =
       "Este documento está certificado y no admite cambios. No se puede firmar sin invalidar su certificación.";
+  } else if (soloCampo) {
+    el.notaFirmasTexto.textContent =
+      "Este documento está certificado. Para no invalidar su certificación, " +
+      "el sello se colocará solo en el campo de la nueva firma.";
   } else if (n > 0) {
     el.notaFirmasTexto.textContent =
-      `Este PDF ya tiene ${plural(n, "firma", "firmas")}. Para que ${n === 1 ? "siga siendo válida" : "sigan siendo válidas"}, ` +
-      "el sello se colocará solo en el campo de la nueva firma.";
+      `Este PDF ya tiene ${plural(n, "firma", "firmas")}. La nueva firma se agrega con su sello ` +
+      `sin invalidar ${n === 1 ? "la anterior" : "las anteriores"}.`;
   }
-  radioTodas.disabled = n > 0;
-  if (n > 0) radioUltima.checked = true;
+  radioTodas.disabled = soloCampo;
+  if (soloCampo) radioUltima.checked = true;
   else radioTodas.checked = leerPreferencia("paginas", "todas") === "todas";
   if (!radioTodas.checked) radioUltima.checked = true;
 }
@@ -983,8 +994,7 @@ function paginaDelCampo() {
 function paginasConSello() {
   const campo = paginaDelCampo();
   const todas = document.querySelector('input[name="paginas"]:checked').value === "todas";
-  const conFirmas = estado.info && estado.info.firmas.length > 0;
-  return { campo, todas: todas && !conFirmas };
+  return { campo, todas: todas && !soloCampoDeFirma() };
 }
 
 function actualizarMarca(n) {
@@ -1542,10 +1552,11 @@ async function firmar() {
     return;
   }
   if (r.ok) {
+    const previas = r.firmas_previas > 0 ? ` El PDF ya tenía ${plural(r.firmas_previas, "firma", "firmas")}.` : "";
     const sellos =
       r.modo === "solo_campo"
-        ? `El PDF ya tenía ${plural(r.firmas_previas, "firma", "firmas")}; el sello se colocó solo en el campo de firma (página ${r.pagina_firma + 1}).`
-        : `Sello en ${plural(r.paginas_selladas.length, "página", "páginas")} de ${r.total_paginas} y 1 firma digital.`;
+        ? `El documento está certificado; el sello se colocó solo en el campo de firma (página ${r.pagina_firma + 1}).`
+        : `Sello en ${plural(r.paginas_selladas.length, "página", "páginas")} de ${r.total_paginas} y 1 firma digital.${previas}`;
     mostrarDialogo({
       tipo: "ok",
       titulo: "Documento firmado",
@@ -1580,7 +1591,7 @@ async function firmarLote() {
   const opciones = {
     ...opcionesComunes(),
     caja: estado.caja,
-    // Opción común: no se toma del control, que en un PDF ya firmado se fuerza a «solo la página de firma».
+    // Opción común: no se toma del control, que en un PDF certificado se fuerza a «solo la página de firma».
     paginas: leerPreferencia("paginas", "todas"),
     en_carpeta: el.chkGuardarComo.checked,
     ajustes: ajustesParaPython(),

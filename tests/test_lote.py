@@ -404,7 +404,7 @@ def test_lote_con_documento_ya_firmado_conserva_la_primera_firma(api, cng, tmp_p
     assert r["agregados"][0]["firmas"] == 1
     lote = api.firmar_lote({"caja": CAJA, "paginas": "todas"})
     assert [Path(f["salida"]).name for f in lote["firmados"]] == ["previo_firmado.pdf", "dos_firmado.pdf"]
-    assert lote["firmados"][0]["modo"] == "solo_campo"
+    assert lote["firmados"][0]["modo"] == "contenido"  # sellado normal: la primera firma sigue válida
 
     v = validar_pdf(lote["firmados"][0]["salida"], permitir_red=False)
     assert len(v) == 2

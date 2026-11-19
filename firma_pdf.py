@@ -22,11 +22,16 @@ Convención de coordenadas (la interfaz debe usar la misma):
     del sello se dibuja con la orientación del espacio sin rotar, es decir,
     girado junto con la página.
 
-PDF que ya tienen firmas: agregar sellos en otras páginas modificaría el
-documento ya firmado y los validadores (Adobe, pyHanko) podrían marcarlo como
-un cambio no permitido. En ese caso solo se coloca el campo de firma visible
-en una página (modo "solo_campo"), lo que sí está permitido. Si una firma de
-certificación (DocMDP) prohíbe cualquier cambio, se rechaza la operación.
+PDF que ya tienen firmas: la nueva firma se agrega en una revisión
+incremental con su propio campo, que con `paginas="todas"` también tiene un
+widget por página. Un campo de firma nuevo y sus widgets son un cambio
+permitido después de una firma de aprobación: las firmas anteriores siguen
+intactas y válidas (pyHanko las reporta con modificaciones FORM_FILLING). Por
+eso se sella igual que en un PDF sin firmas.
+Documentos certificados (DocMDP): con nivel 1 (sin cambios) se rechaza la
+operación. Con nivel 2 o 3 solo se coloca el campo de firma en su página
+(modo "solo_campo"), como antes: no está comprobado que los validadores
+acepten widgets en las demás páginas tras una certificación.
 
 Tipos de sello (sin borde, letra sin serifa: Arial incrustada si está
 disponible, si no Helvetica estándar):
@@ -168,7 +173,9 @@ class ResultadoFirma:
     total_paginas: int
     paginas_selladas: list[int]
     pagina_firma: int
-    modo: str  # "contenido" (documento sin firmas; con "todas", un widget por página) | "solo_campo"
+    # "contenido": sello normal (con "todas", un widget por página), haya o no firmas previas.
+    # "solo_campo": documento certificado (DocMDP 2 o 3): solo el campo de firma en su página.
+    modo: str
     firmas_previas: int
     campo: str
 
@@ -742,12 +749,15 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
             return posiciones_paginas.get(indice, posicion)
 
         firmas_previas = len(writer.prev.embedded_signatures)
-        if _nivel_docmdp(writer.prev) == fields.MDPPerm.NO_CHANGES.value:
+        nivel_docmdp = _nivel_docmdp(writer.prev)
+        if nivel_docmdp == fields.MDPPerm.NO_CHANGES.value:
             raise ErrorFirma(
                 "El documento está certificado y no permite ningún cambio, ni siquiera "
                 "nuevas firmas. No se puede firmar sin invalidar la certificación."
             )
-        modo = "solo_campo" if firmas_previas else "contenido"
+        # Con firmas previas de aprobación se sella igual que sin firmas; solo un
+        # documento certificado (DocMDP 2 o 3) conserva el sello en el campo.
+        modo = "solo_campo" if nivel_docmdp is not None else "contenido"
 
         paginas = [pagina_firma]
         # "todas": el campo de firma tiene un widget por página (/Kids), así

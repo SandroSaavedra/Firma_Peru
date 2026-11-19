@@ -145,7 +145,8 @@ def test_todas_segunda_firma_mantiene_valida_la_primera(tmp_path, pdf_multipagin
         primera, segunda, firmante, "PRUEBA", OpcionesFirma(paginas="todas", tipo="visto_bueno")
     )
 
-    assert resultado.modo == "solo_campo"
+    assert resultado.modo == "contenido"
+    assert resultado.paginas_selladas == [0, 1, 2]
     reader = _leer(segunda)
     firmas = reader.embedded_signatures
     assert len(firmas) == 2
@@ -155,9 +156,13 @@ def test_todas_segunda_firma_mantiene_valida_la_primera(tmp_path, pdf_multipagin
         assert estado.intact and estado.valid
         assert estado.docmdp_ok
         assert estado.modification_level <= ModificationLevel.FORM_FILLING
-    # la segunda firma solo agrega su propio widget en la página de firma
-    assert len(_widgets_de_firma(reader, 0)) == 1
-    assert len(_widgets_de_firma(reader, 2)) == 2
+    # el visto bueno también sella cada página: un widget de cada firma por página
+    for indice, vista in enumerate([A4, CARTA_HORIZONTAL, A4]):
+        nuevos = [w for w, c in _widgets_de_firma(reader, indice) if c["/T"] == resultado.campo]
+        assert len(_widgets_de_firma(reader, indice)) == 2
+        assert len(nuevos) == 1
+        assert _tamano(tuple(float(v) for v in nuevos[0]["/Rect"])) == firma_pdf.TAMANOS_SELLO["visto_bueno"]
+    assert len(firmas[1].sig_field["/Kids"]) == 3
 
 
 def test_ultima_solo_pone_el_campo_de_firma(tmp_path, pdf_multipagina, firmante):
@@ -214,32 +219,96 @@ def test_segunda_firma_no_invalida_la_primera(tmp_path, pdf_multipagina, firmant
     resultado = firmar_pdf(primera, segunda, firmante, "PRUEBA", OpcionesFirma(paginas="todas"))
 
     assert resultado.firmas_previas == 1
-    assert resultado.modo == "solo_campo"
-    assert resultado.paginas_selladas == [2]
+    # Un PDF ya firmado (sin certificación) se sella igual que uno sin firmas.
+    assert resultado.modo == "contenido"
+    assert resultado.paginas_selladas == [0, 1, 2]
     assert resultado.campo != "FirmaDNIe"  # nombre único
 
     reader = _leer(segunda)
     firmas = reader.embedded_signatures
     assert len(firmas) == 2
     contexto = ValidationContext(trust_roots=[material_prueba[1]])
-    estado = validate_pdf_signature(firmas[0], contexto)
-    assert estado.intact and estado.valid
-    assert estado.docmdp_ok
-    assert estado.modification_level <= ModificationLevel.FORM_FILLING
+    primera_estado = validate_pdf_signature(firmas[0], contexto)
+    assert primera_estado.intact and primera_estado.valid
+    assert primera_estado.docmdp_ok
+    assert primera_estado.modification_level == ModificationLevel.FORM_FILLING  # solo la nueva firma
+    segunda_estado = validate_pdf_signature(firmas[1], contexto)
+    assert segunda_estado.intact and segunda_estado.valid
+    assert segunda_estado.modification_level in (None, ModificationLevel.NONE)
+
+    # Cada página tiene un widget de cada firma; el nuevo campo comparte su apariencia.
+    assert len(firmas[1].sig_field["/Kids"]) == 3
+    apariencias = set()
+    for indice in range(3):
+        widgets = _widgets_de_firma(reader, indice)
+        assert sorted(c["/T"] for _, c in widgets) == ["FirmaDNIe", resultado.campo]
+        (nuevo,) = [w for w, c in widgets if c["/T"] == resultado.campo]
+        assert int(nuevo["/F"]) & 4
+        apariencias.add(_ap_normal(nuevo).reference)
+    assert len(apariencias) == 1
 
 
-def test_documento_certificado_sin_cambios_se_rechaza(tmp_path, pdf_multipagina, firmante):
+def test_tercera_firma_mantiene_validas_las_anteriores(tmp_path, pdf_multipagina, firmante, material_prueba):
+    rutas = [pdf_multipagina] + [tmp_path / f"{n}.pdf" for n in range(1, 4)]
+    tipos = ["firma", "visto_bueno", "firma"]
+    for entrada, salida, tipo in zip(rutas, rutas[1:], tipos):
+        firmar_pdf(entrada, salida, firmante, "PRUEBA", OpcionesFirma(paginas="todas", tipo=tipo))
+
+    reader = _leer(rutas[-1])
+    firmas = reader.embedded_signatures
+    assert len(firmas) == 3
+    contexto = ValidationContext(trust_roots=[material_prueba[1]])
+    for firma in firmas:
+        estado = validate_pdf_signature(firma, contexto)
+        assert estado.intact and estado.valid and estado.docmdp_ok
+        assert estado.modification_level <= ModificationLevel.FORM_FILLING
+    for indice in range(3):
+        assert len(_widgets_de_firma(reader, indice)) == 3
+
+
+def test_ultima_en_pdf_ya_firmado_solo_pone_el_campo(tmp_path, pdf_multipagina, firmante):
+    primera = tmp_path / "primera.pdf"
+    segunda = tmp_path / "segunda.pdf"
+    firmar_pdf(pdf_multipagina, primera, firmante, "PRUEBA", OpcionesFirma(paginas="todas"))
+    resultado = firmar_pdf(primera, segunda, firmante, "PRUEBA", OpcionesFirma(paginas="ultima"))
+
+    assert resultado.paginas_selladas == [2]
+    reader = _leer(segunda)
+    assert len(_widgets_de_firma(reader, 0)) == 1
+    assert len(_widgets_de_firma(reader, 2)) == 2
+
+
+@pytest.mark.parametrize("permiso", [fields.MDPPerm.FILL_FORMS, fields.MDPPerm.ANNOTATE])
+def test_documento_certificado_con_cambios_permitidos_solo_pone_el_campo(
+    tmp_path, pdf_multipagina, firmante, permiso
+):
+    # Con certificación (DocMDP 2 o 3) se mantiene el campo solo en su página.
+    certificado = _certificar(tmp_path, pdf_multipagina, firmante, permiso)
+    resultado = firmar_pdf(certificado, tmp_path / "s.pdf", firmante, "PRUEBA", OpcionesFirma(paginas="todas"))
+
+    assert resultado.modo == "solo_campo"
+    assert resultado.paginas_selladas == [2]
+    reader = _leer(tmp_path / "s.pdf")
+    assert len(reader.embedded_signatures) == 2
+    for indice, esperados in enumerate([0, 0, 1]):
+        nuevos = [w for w, c in _widgets_de_firma(reader, indice) if c["/T"] == resultado.campo]
+        assert len(nuevos) == esperados
+
+
+def _certificar(tmp_path, entrada, firmante, permiso):
     from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 
     certificado = tmp_path / "certificado.pdf"
-    with open(pdf_multipagina, "rb") as inf:
+    with open(entrada, "rb") as inf:
         writer = IncrementalPdfFileWriter(inf)
-        meta = signers.PdfSignatureMetadata(
-            field_name="Autor", certify=True, docmdp_permissions=fields.MDPPerm.NO_CHANGES
-        )
+        meta = signers.PdfSignatureMetadata(field_name="Autor", certify=True, docmdp_permissions=permiso)
         with open(certificado, "wb") as outf:
             signers.PdfSigner(meta, signer=firmante).sign_pdf(writer, output=outf)
+    return certificado
 
+
+def test_documento_certificado_sin_cambios_se_rechaza(tmp_path, pdf_multipagina, firmante):
+    certificado = _certificar(tmp_path, pdf_multipagina, firmante, fields.MDPPerm.NO_CHANGES)
     with pytest.raises(ErrorFirma, match="no permite"):
         firmar_pdf(certificado, tmp_path / "s.pdf", firmante, "PRUEBA", OpcionesFirma())
 
@@ -326,24 +395,30 @@ def test_pagina_del_campo_usa_su_posicion_propia(tmp_path, pdf_multipagina, firm
         assert _rect_del_campo(reader, 0) == pytest.approx(rect(documento, A4, "firma"), abs=0.01)
 
 
-def test_posicion_propia_en_pdf_ya_firmado_mueve_solo_el_campo(tmp_path, pdf_multipagina, firmante, material_prueba):
+def test_posiciones_propias_en_pdf_ya_firmado_se_respetan(tmp_path, pdf_multipagina, firmante, material_prueba):
     primera = tmp_path / "primera.pdf"
     segunda = tmp_path / "segunda.pdf"
-    firmar_pdf(pdf_multipagina, primera, firmante, "PRUEBA", OpcionesFirma(paginas="todas"))
-    propia = _posicion(0.2, 0.5)
-    opciones = OpcionesFirma(paginas="todas", pagina_firma=0, posiciones_paginas={0: propia})
+    opciones1 = OpcionesFirma(paginas="todas", posicion=_posicion(0.1, 0.1), posiciones_paginas={1: _posicion(0.5, 0.5)})
+    firmar_pdf(pdf_multipagina, primera, firmante, "PRUEBA", opciones1)
+    documento = _posicion(0.6, 0.1)
+    propias = {0: _posicion(0.2, 0.8), 2: _posicion(0.3, 0.4)}
+    opciones = OpcionesFirma(paginas="todas", pagina_firma=0, posicion=documento, posiciones_paginas=propias)
     resultado = firmar_pdf(primera, segunda, firmante, "PRUEBA", opciones)
 
-    assert resultado.modo == "solo_campo"
+    assert resultado.modo == "contenido"
+    assert resultado.pagina_firma == 0 and resultado.paginas_selladas == [0, 1, 2]
     reader = _leer(segunda)
-    nuevos = [w for w, c in _widgets_de_firma(reader, 0) if c["/T"] == resultado.campo]
-    assert len(nuevos) == 1
-    rect = tuple(float(v) for v in nuevos[0]["/Rect"])
-    assert rect == pytest.approx(firma_pdf.rect_sello(propia, A4, "firma"), abs=0.01)
+    vistas = [A4, CARTA_HORIZONTAL, A4]
+    for indice, vista in enumerate(vistas):
+        nuevos = [w for w, c in _widgets_de_firma(reader, indice) if c["/T"] == resultado.campo]
+        assert len(nuevos) == 1
+        rect = tuple(float(v) for v in nuevos[0]["/Rect"])
+        esperado = firma_pdf.rect_sello(propias.get(indice, documento), vista, "firma")
+        assert rect == pytest.approx(esperado, abs=0.01)
     contexto = ValidationContext(trust_roots=[material_prueba[1]])
     for firma in reader.embedded_signatures:
         estado = validate_pdf_signature(firma, contexto)
-        assert estado.intact and estado.valid
+        assert estado.intact and estado.valid and estado.docmdp_ok
         assert estado.modification_level <= ModificationLevel.FORM_FILLING
 
 

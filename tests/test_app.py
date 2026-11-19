@@ -73,11 +73,11 @@ def test_abrir_firmar_y_validar(api, pdf_multipagina, monkeypatch):
     assert v["ok"] and len(v["firmas"]) == 1
     assert v["firmas"][0]["integridad"] == "intacta"
 
-    # Segunda firma sobre el PDF ya firmado: no sobrescribe y usa solo el campo.
+    # Segunda firma sobre el PDF ya firmado: no sobrescribe y sella cada página como la primera.
     info2 = api.abrir_ruta(r["salida"])
     assert info2["firmas"] == ["FirmaDNIe"]
     r2 = api.firmar({"paginas": "todas"})
-    assert r2["ok"] and r2["modo"] == "solo_campo"
+    assert r2["ok"] and r2["modo"] == "contenido" and r2["paginas_selladas"] == [0, 1, 2]
     assert r2["nombre"] == "entrada_firmado_firmado.pdf"
 
 

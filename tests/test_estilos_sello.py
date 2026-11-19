@@ -248,7 +248,8 @@ def test_visto_bueno_sobre_pdf_firmado_mantiene_la_primera(tmp_path, pdf_multipa
     firmar_pdf(pdf_multipagina, primera, firmante, "PRUEBA", OpcionesFirma(tipo="firma", logo=str(logo_png)))
     resultado = firmar_pdf(primera, segunda, firmante, "PRUEBA", OpcionesFirma(tipo="visto_bueno"))
 
-    assert resultado.modo == "solo_campo"
+    assert resultado.modo == "contenido"
+    assert resultado.paginas_selladas == [0, 1, 2]  # el visto bueno también sella cada página
     reader = _leer(segunda)
     firmas = reader.embedded_signatures
     assert len(firmas) == 2

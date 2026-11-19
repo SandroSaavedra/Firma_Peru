@@ -5,13 +5,13 @@ páginas, con una sola firma criptográfica (PAdES).
 Cómo funciona:
   - El DNIe se usa a través de Windows CNG (minidriver de RENIEC), no PKCS#11.
     Windows pide el PIN con su propio cuadro de diálogo; el script no lo ve.
-  - En todas las páginas menos la última se dibuja el sello como contenido
-    de la página (texto con borde).
-  - En la última página va el campo de firma real, con el mismo aspecto.
+  - El campo de firma tiene un widget (el sello) en cada página; el de la
+    última página es el principal. Todos comparten el mismo aspecto.
   - Se hace UNA sola firma criptográfica, que cubre el documento completo
-    (incluidos los sellos recién dibujados).
-  - Si el PDF ya tiene firmas, solo se coloca el campo de firma de la última
-    página para no invalidar las firmas anteriores.
+    (incluidos los sellos).
+  - Si el PDF ya tiene firmas, la nueva firma se sella igual en todas las
+    páginas y las firmas anteriores siguen siendo válidas. Solo en un documento
+    certificado el sello va únicamente en el campo de firma de la última página.
 
 La lógica de firma está en firma_pdf.py (compartida con la aplicación de
 escritorio app.py).
@@ -54,7 +54,9 @@ def firmar(filtro_cert, entrada, salida, tipo="firma", motivo=None, logo=None, i
     opciones = OpcionesFirma(tipo=tipo, motivo=motivo, logo=logo, imagen_vb=imagen_vb)
     resultado = firmar_pdf(entrada, salida, FirmanteCNG(llave), llave.titular, opciones)
     if resultado.modo == "solo_campo":
-        print(f"El PDF ya tenía {resultado.firmas_previas} firma(s): el sello va solo en el campo de firma.")
+        print("El documento está certificado: el sello va solo en el campo de firma.")
+    elif resultado.firmas_previas:
+        print(f"El PDF ya tenía {resultado.firmas_previas} firma(s); siguen siendo válidas.")
     print(
         f"Listo: {len(resultado.paginas_selladas)} de {resultado.total_paginas} páginas selladas, "
         f"1 firma digital -> {salida}"

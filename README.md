@@ -112,9 +112,16 @@ certificado es de confianza según los certificados raíz de Windows.
 
 ### PDF que ya tienen firmas
 
-Si el PDF ya está firmado, el sello se coloca solo en el campo de la nueva
-firma: dibujarlo en las demás páginas invalidaría las firmas anteriores. Si el
-documento está certificado sin permitir cambios, la aplicación no lo firma.
+Un PDF ya firmado se sella igual que uno sin firmas: con «Sello visible en»
+todas las páginas, la nueva firma pone su sello en cada página (en la posición
+de cada página) y las firmas anteriores siguen siendo válidas. La nueva firma
+se agrega como una revisión con su propio campo de firma, un cambio permitido
+después de firmar; al validar, las firmas anteriores aparecen con
+modificaciones «permitidas».
+
+Si el documento está **certificado** (firma de certificación con permisos
+DocMDP), el sello va solo en el campo de la nueva firma, y si la certificación
+no permite ningún cambio, la aplicación no lo firma.
 
 ### Páginas rotadas
 
