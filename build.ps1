@@ -3,11 +3,11 @@
 # Uso (PowerShell, en la carpeta del proyecto):  .\build.ps1
 #   -SinPruebas     omite pytest antes de construir
 #   -SinInstalador  solo genera la carpeta dist\FirmaPeru, sin compilar el instalador
-#   -Version x.y.z  version del instalador (predeterminada: 1.0.0)
+#   -Version x.y.z  version del instalador (predeterminada: 1.1.0)
 param(
     [switch]$SinPruebas,
     [switch]$SinInstalador,
-    [string]$Version = "1.0.0"
+    [string]$Version = "1.1.0"
 )
 
 $ErrorActionPreference = "Stop"
