@@ -12,6 +12,21 @@ antes de cada NCryptSignHash y firma con NCRYPT_SILENT_FLAG, sin el cuadro de
 Windows. El PIN vive solo en un búfer de ctypes que se borra al cerrar la
 sesión o en cuanto el PIN falla; nunca se registra, ni va en un error, ni se
 devuelve. Un PIN incorrecto o bloqueado detiene la sesión: no se reintenta.
+
+Búsqueda de la llave (`listar_llaves`), en este orden y solo si la vía
+anterior no halló ninguna llave con certificado:
+
+1. NCryptEnumKeys sin alcance (la tarjeta que el proveedor toma por omisión).
+2. NCryptEnumKeys con el alcance de cada lector con tarjeta (`\\\\.\\<lector>\\`,
+   lectores de WinSCard vía `diagnostico_dnie`). La llave queda con su nombre
+   completo `\\\\.\\<lector>\\<contenedor>`, que el proveedor abre directamente.
+3. Certificados del almacén «MY» del usuario cuya llave está en una tarjeta
+   inteligente (CERT_KEY_PROV_INFO_PROP_ID): se abre el contenedor indicado,
+   primero con el nombre completo de cada lector con tarjeta y luego tal cual.
+
+Las tres vías dejan una `LlaveTarjeta` que se abre igual (NCryptOpenKey en el
+Smart Card KSP por su nombre), así que `FirmanteCNG` y `SesionFirma` firman sin
+cambios con cualquiera de ellas.
 """
 import ctypes
 import hashlib
@@ -43,6 +58,8 @@ _NCRYPT_SILENT_FLAG = 0x40
 _BCRYPT_PAD_PKCS1 = 0x2
 _NTE_NO_MORE_ITEMS = 0x8009002A
 _NTE_NOT_FOUND = 0x80090011
+_CERT_KEY_PROV_INFO_PROP_ID = 2
+_CERT_NCRYPT_KEY_SPEC = 0xFFFFFFFF  # dwKeySpec de una llave CNG (no CAPI)
 
 # PIN incorrecto o bloqueado: otro intento con el mismo PIN podría bloquear el DNIe.
 CODIGOS_PIN = {
@@ -76,6 +93,18 @@ class _CertContext(ctypes.Structure):
         ("cbCertEncoded", wintypes.DWORD),
         ("pCertInfo", ctypes.c_void_p),
         ("hCertStore", ctypes.c_void_p),
+    ]
+
+
+class _ProvInfo(ctypes.Structure):  # CRYPT_KEY_PROV_INFO
+    _fields_ = [
+        ("pwszContainerName", wintypes.LPWSTR),
+        ("pwszProvName", wintypes.LPWSTR),
+        ("dwProvType", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("cProvParam", wintypes.DWORD),
+        ("rgProvParam", ctypes.c_void_p),
+        ("dwKeySpec", wintypes.DWORD),
     ]
 
 
@@ -131,6 +160,13 @@ _crypt32.CertEnumCertificatesInStore.argtypes = [ctypes.c_void_p, ctypes.POINTER
 _crypt32.CertEnumCertificatesInStore.restype = ctypes.POINTER(_CertContext)
 _crypt32.CertCloseStore.argtypes = [ctypes.c_void_p, wintypes.DWORD]
 _crypt32.CertCloseStore.restype = wintypes.BOOL
+_crypt32.CertGetCertificateContextProperty.argtypes = [
+    ctypes.POINTER(_CertContext),
+    wintypes.DWORD,
+    ctypes.c_void_p,
+    ctypes.POINTER(wintypes.DWORD),
+]
+_crypt32.CertGetCertificateContextProperty.restype = wintypes.BOOL
 
 
 class ErrorCNG(RuntimeError):
@@ -217,9 +253,16 @@ def _leer_propiedad(handle, nombre) -> bytes:
     return bytes(buf[: tam.value])
 
 
-def listar_llaves() -> list[LlaveTarjeta]:
-    """Enumera las llaves del DNIe que tienen certificado. No pide PIN."""
-    proveedor = _abrir_proveedor()
+def _describir_alcance(alcance: str | None) -> str:
+    return f"alcance «{alcance}»" if alcance else "sin alcance"
+
+
+def _enumerar(proveedor, alcance: str | None = None) -> tuple[list[LlaveTarjeta], int | None, int]:
+    """
+    Enumera las llaves de `proveedor` en `alcance` (None = sin alcance) y lee
+    el certificado de cada una. Devuelve (llaves con certificado, NTE_NOT_FOUND
+    si la enumeración terminó así o None, llaves enumeradas). No pide PIN.
+    """
     llaves = []
     enumeradas = 0
     estado_fin = None  # NTE_NOT_FOUND si la enumeración terminó así
@@ -227,16 +270,17 @@ def listar_llaves() -> list[LlaveTarjeta]:
     try:
         while True:
             item = ctypes.POINTER(_NCryptKeyName)()
-            status = _EnumKeys(proveedor, None, ctypes.byref(item), ctypes.byref(estado), _NCRYPT_SILENT_FLAG)
+            status = _EnumKeys(proveedor, alcance, ctypes.byref(item), ctypes.byref(estado), _NCRYPT_SILENT_FLAG)
             if status & 0xFFFFFFFF == _NTE_NO_MORE_ITEMS:
                 break
             if status & 0xFFFFFFFF == _NTE_NOT_FOUND:
                 # El proveedor no encuentra la tarjeta o sus llaves: equivale a «no hay llaves».
                 logger.warning(
-                    "NCryptEnumKeys devolvió 0x%08X (NTE_NOT_FOUND) en «%s» tras %d llave(s); "
+                    "NCryptEnumKeys devolvió 0x%08X (NTE_NOT_FOUND) en «%s» (%s) tras %d llave(s); "
                     "se trata como fin de la enumeración.",
                     status & 0xFFFFFFFF,
                     PROVEEDOR_TARJETA,
+                    _describir_alcance(alcance),
                     enumeradas,
                 )
                 estado_fin = _NTE_NOT_FOUND
@@ -245,9 +289,10 @@ def listar_llaves() -> list[LlaveTarjeta]:
                 _verificar(status, "NCryptEnumKeys")
             except ErrorCNG as e:
                 logger.warning(
-                    "NCryptEnumKeys falló con 0x%08X en «%s» tras %d llave(s): %s",
+                    "NCryptEnumKeys falló con 0x%08X en «%s» (%s) tras %d llave(s): %s",
                     status & 0xFFFFFFFF,
                     PROVEEDOR_TARJETA,
+                    _describir_alcance(alcance),
                     enumeradas,
                     e,
                 )
@@ -255,7 +300,11 @@ def listar_llaves() -> list[LlaveTarjeta]:
             enumeradas += 1
             try:
                 info = item.contents
-                candidata = LlaveTarjeta(info.pszName, info.dwLegacyKeySpec, None)
+                nombre = info.pszName
+                if alcance and not nombre.startswith("\\\\.\\"):
+                    # Con alcance, el contenedor se abre con su nombre completo \\.\<lector>\<contenedor>.
+                    nombre = alcance + nombre
+                candidata = LlaveTarjeta(nombre, info.dwLegacyKeySpec, None)
             finally:
                 _FreeBuffer(item)
             try:
@@ -276,11 +325,205 @@ def listar_llaves() -> list[LlaveTarjeta]:
     finally:
         if estado:
             _FreeBuffer(estado)
+    return llaves, estado_fin, enumeradas
+
+
+def _alcance_de_lector(nombre: str) -> str:
+    """Alcance del Smart Card KSP para un lector: barra doble, punto, barra, el lector y barra."""
+    return "\\\\.\\" + nombre + "\\"
+
+
+def _lectores_con_tarjeta() -> list[diagnostico_dnie.Lector]:
+    """Lectores de WinSCard con una tarjeta presente. Registra todos los vistos. Nunca lanza."""
+    try:
+        hechos = _recolectar_hechos()
+    except Exception as e:  # noqa: BLE001 - sin WinSCard se sigue con el almacén
+        logger.warning("Búsqueda por lector: no se pudieron consultar los lectores (%s: %s).", type(e).__name__, e)
+        return []
+    lectores = hechos.get("lectores") or []
+    error = hechos.get("error_lectores")
+    logger.info(
+        "Búsqueda por lector: %d lector(es) visto(s)%s.",
+        len(lectores),
+        f" (error de WinSCard 0x{error & 0xFFFFFFFF:08X})" if error else "",
+    )
+    con_tarjeta = []
+    for lector in lectores:
+        presente = bool(lector.estado & diagnostico_dnie.SCARD_STATE_PRESENT)
+        logger.info(
+            "Lector «%s»: estado 0x%X%s.", lector.nombre, lector.estado, "" if presente else ", sin tarjeta (se omite)"
+        )
+        if presente:
+            con_tarjeta.append(lector)
+    return con_tarjeta
+
+
+def _buscar_por_lector(proveedor, lectores) -> tuple[list[LlaveTarjeta], list[str]]:
+    """Vía 2: enumera con el alcance de cada lector con tarjeta. Un lector que falla se registra y se omite."""
+    halladas, origenes = [], []
+    for lector in lectores:
+        alcance = _alcance_de_lector(lector.nombre)
+        try:
+            llaves, estado_fin, enumeradas = _enumerar(proveedor, alcance)
+        except ErrorCNG as e:
+            logger.warning("Lector «%s» (estado 0x%X): la enumeración falló: %s", lector.nombre, lector.estado, e)
+            continue
+        logger.info(
+            "Lector «%s» (estado 0x%X): %d llave(s) enumerada(s), %d con certificado%s.",
+            lector.nombre,
+            lector.estado,
+            enumeradas,
+            len(llaves),
+            f"; terminó con 0x{estado_fin:08X}" if estado_fin else "",
+        )
+        if llaves:
+            halladas.extend(llaves)
+            origenes.append(f"lector «{lector.nombre}»")
+    return halladas, origenes
+
+
+@dataclass
+class _CertDeTarjeta:
+    """Certificado del almacén «MY» con el proveedor y el contenedor de su llave (CRYPT_KEY_PROV_INFO)."""
+
+    cert: x509.Certificate
+    proveedor: str
+    contenedor: str
+    tipo_legado: int  # dwKeySpec; _CERT_NCRYPT_KEY_SPEC si es una llave CNG
+
+
+def _leer_prov_info(ctx) -> tuple[str, str, int] | None:
+    """(proveedor, contenedor, dwKeySpec) de CERT_KEY_PROV_INFO_PROP_ID, o None si no tiene."""
+    tam = wintypes.DWORD()
+    if not _crypt32.CertGetCertificateContextProperty(ctx, _CERT_KEY_PROV_INFO_PROP_ID, None, ctypes.byref(tam)):
+        return None
+    if tam.value < ctypes.sizeof(_ProvInfo):
+        return None
+    buf = (ctypes.c_ubyte * tam.value)()
+    if not _crypt32.CertGetCertificateContextProperty(ctx, _CERT_KEY_PROV_INFO_PROP_ID, buf, ctypes.byref(tam)):
+        return None
+    info = _ProvInfo.from_buffer(buf)  # sus cadenas apuntan dentro de `buf`: se copian antes de soltarlo
+    return info.pwszProvName or "", info.pwszContainerName or "", info.dwKeySpec
+
+
+def _certificados_de_tarjeta_en_almacen() -> list[_CertDeTarjeta]:
+    """
+    Certificados del almacén «MY» del usuario que indican dónde está su llave
+    (CERT_KEY_PROV_INFO_PROP_ID). Solo lectura: no abre llaves ni toca la tarjeta.
+    """
+    almacen = _crypt32.CertOpenSystemStoreW(0, "MY")
+    if not almacen:
+        logger.warning("Almacén MY: no se pudo abrir el almacén del usuario.")
+        return []
+    hallados = []
+    try:
+        ctx = _crypt32.CertEnumCertificatesInStore(almacen, None)
+        while ctx:
+            try:
+                prov_info = _leer_prov_info(ctx)
+                if prov_info is not None:
+                    c = ctx.contents
+                    cert = x509.Certificate.load(ctypes.string_at(c.pbCertEncoded, c.cbCertEncoded))
+                    cert.subject.native  # asn1crypto analiza en diferido: un certificado dañado falla aquí
+                    hallados.append(_CertDeTarjeta(cert, *prov_info))
+            except Exception as e:  # noqa: BLE001 - un certificado ilegible no impide revisar los demás
+                logger.info("Almacén MY: certificado omitido (%s: %s).", type(e).__name__, e)
+            ctx = _crypt32.CertEnumCertificatesInStore(almacen, ctx)
+    finally:
+        _crypt32.CertCloseStore(almacen, 0)
+    return hallados
+
+
+_USOS_DE_FIRMA = {"digital_signature", "non_repudiation", "content_commitment"}
+
+
+def _buscar_en_almacen(proveedor, lectores) -> list[LlaveTarjeta]:
+    """
+    Vía 3: certificados del almacén «MY» con la llave en una tarjeta inteligente
+    y uso de firma. Su contenedor se abre en silencio, primero con el nombre
+    completo de cada lector con tarjeta y luego tal cual. Nunca lanza.
+    """
+    try:
+        candidatos = _certificados_de_tarjeta_en_almacen()
+    except Exception as e:  # noqa: BLE001 - el almacén es la última vía; su fallo no oculta el error original
+        logger.warning("Almacén MY: no se pudo leer (%s: %s).", type(e).__name__, e)
+        return []
+    logger.info("Almacén MY: %d certificado(s) con llave asociada.", len(candidatos))
+    halladas = []
+    for c in candidatos:
+        try:
+            titular = c.cert.subject.native.get("common_name", "")
+            usos = set(c.cert.key_usage_value.native) if c.cert.key_usage_value else set()
+        except Exception as e:  # noqa: BLE001
+            logger.info("Almacén MY: certificado omitido (%s: %s).", type(e).__name__, e)
+            continue
+        de_tarjeta = "smart card" in c.proveedor.lower()
+        de_firma = bool(usos & _USOS_DE_FIRMA)
+        logger.info(
+            "Almacén MY: titular %r, proveedor «%s», contenedor %r, tipo_legado 0x%X, tarjeta: %s, uso de firma: %s.",
+            titular,
+            c.proveedor,
+            c.contenedor,
+            c.tipo_legado,
+            "sí" if de_tarjeta else "no",
+            "sí" if de_firma else "no",
+        )
+        if not (de_tarjeta and de_firma and c.contenedor):
+            continue
+        tipo_legado = 0 if c.tipo_legado == _CERT_NCRYPT_KEY_SPEC else c.tipo_legado
+        if c.contenedor.startswith("\\\\.\\"):
+            nombres = [c.contenedor]
+        else:
+            nombres = [_alcance_de_lector(l.nombre) + c.contenedor for l in lectores] + [c.contenedor]
+        for nombre in nombres:
+            candidata = LlaveTarjeta(nombre, tipo_legado, None)
+            try:
+                handle = _abrir_llave(proveedor, candidata, _NCRYPT_SILENT_FLAG)
+            except Exception as e:  # noqa: BLE001 - se prueba el siguiente nombre
+                logger.info("Almacén MY: no se pudo abrir el contenedor %r: %s", nombre, e)
+                continue
+            try:
+                der = _leer_propiedad(handle, _PROP_CERTIFICADO)
+            except ErrorCNG:
+                der = None  # sin esa propiedad se usa el certificado del almacén
+            finally:
+                _FreeObject(handle)
+            if der is not None and der != c.cert.dump():
+                logger.info("Almacén MY: el contenedor %r tiene otro certificado; se omite.", nombre)
+                continue
+            candidata.cert = c.cert
+            logger.info("Llave con certificado (almacén MY): %s", describir_llave(candidata))
+            halladas.append(candidata)
+            break
+    return halladas
+
+
+def listar_llaves() -> list[LlaveTarjeta]:
+    """
+    Las llaves del DNIe que tienen certificado. No pide PIN. Prueba, en orden y
+    solo si la anterior no halló ninguna: sin alcance, por lector y almacén «MY».
+    """
+    proveedor = _abrir_proveedor()
+    try:
+        llaves, estado_fin, enumeradas = _enumerar(proveedor, None)
+        logger.info("Llaves enumeradas: %d; con certificado: %d.", enumeradas, len(llaves))
+        origen = "sin alcance"
+        if not llaves:
+            lectores = _lectores_con_tarjeta()
+            llaves, origenes = _buscar_por_lector(proveedor, lectores)
+            origen = ", ".join(origenes)
+            if not llaves:
+                llaves = _buscar_en_almacen(proveedor, lectores)
+                origen = "almacén MY"
+    finally:
         _FreeObject(proveedor)
-    logger.info("Llaves enumeradas: %d; con certificado: %d.", enumeradas, len(llaves))
     if not llaves:
+        logger.warning(
+            "No se halló ninguna llave con certificado por ninguna vía (sin alcance, por lector ni almacén MY)."
+        )
         # Con NTE_NOT_FOUND se conserva el código: es reintentable y el diagnóstico lo usa.
         raise ErrorCNG("No se encontró ninguna llave con certificado. ¿Está el DNIe insertado?", codigo=estado_fin)
+    logger.info("Llave(s) del DNIe halladas por: %s (%d).", origen, len(llaves))
     return llaves
 
 

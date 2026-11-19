@@ -205,6 +205,13 @@ Para abrir la carpeta, use **Abrir registro de diagnóstico** (debajo del botón
 «Firmar») o **Abrir registro** en un mensaje de error. Al reportar un problema,
 envíe el archivo `firmador.log`.
 
+Para encontrar la llave del DNIe, la aplicación primero consulta al proveedor
+de tarjetas inteligentes de Windows sin indicar el lector. Si así no la
+encuentra, la busca en cada lector que tenga una tarjeta insertada y, por
+último, en el almacén de certificados personales de Windows («MY»). El
+registro indica por qué vía la encontró (sin alcance, lector «X» o almacén
+MY) y qué vio en cada una.
+
 El botón **ⓘ** de la barra superior muestra la versión instalada y la ruta
 del registro, con un acceso directo a la carpeta.
 
@@ -223,10 +230,10 @@ Las pruebas no usan la tarjeta: la firma de Windows se simula.
 ```
 
 Genera `dist\FirmaPeru\FirmaPeru.exe` y el instalador
-`dist\installer\FirmaPeru-Setup-1.2.2.exe`. Opciones:
+`dist\installer\FirmaPeru-Setup-1.2.3.exe`. Opciones:
 
 - `-SinPruebas`: no ejecuta las pruebas antes de construir.
-- `-Version 1.2.2`: versión del instalador (predeterminada: `VERSION` de
+- `-Version 1.2.3`: versión del instalador (predeterminada: `VERSION` de
   `version.py`, la única fuente de la versión; cámbiela ahí al publicar).
 - `-SinInstalador`: solo genera la carpeta `dist\FirmaPeru`; para distribuirla,
   copie la carpeta completa.
@@ -254,7 +261,7 @@ Qué hace el instalador:
 Instalación silenciosa (por ejemplo, para distribuirlo con un script):
 
 ```powershell
-.\FirmaPeru-Setup-1.2.2.exe /VERYSILENT /SUPPRESSMSGBOXES
+.\FirmaPeru-Setup-1.2.3.exe /VERYSILENT /SUPPRESSMSGBOXES
 ```
 
 Para desinstalar, use **Configuración > Aplicaciones > Aplicaciones instaladas >
