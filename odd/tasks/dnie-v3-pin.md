@@ -71,7 +71,7 @@ DNIe V1/V2 (CJCOP3, ciamd.dll) is not affected: one PIN works there.
     - Tests: `tests/test_dnie_pkcs11.py` (fake module: ABI sizes, DigestInfo, module path, lookup, one login + context login per signature, PIN errors, fallbacks, closing); app-level tests in `tests/test_lote.py` (batch and single document sign N pages with one PIN, wrong PIN stops with no CNG, unrecognised card and pre-login failure go to CNG); autouse `sin_pkcs11` in `tests/test_app.py` and `tests/test_lote.py` so no test loads the real DLL.
     - README note in «Firma real en cada página». Version 1.2.5 (`version.py`, `installer/FirmaPeru.iss` ×2, README ×3).
   - Not verifiable without a V3 card: whether the IDEMIA module recognises the V3 token and exposes the certificate with a `CKA_ID` shared by the private key; whether the signing key has `CKA_ALWAYS_AUTHENTICATE` (both cases are handled); whether `CKM_RSA_PKCS` is offered; whether context-specific login with the in-memory PIN is accepted or the module shows its own PIN dialog; real latency per page.
-  - Commits: `6ac4a13` feat: add a minimal PKCS#11 binding for the IDEMIA DNIe 3.0 module; integration commit below.
+  - Commits: `6ac4a13` feat: add a minimal PKCS#11 binding for the IDEMIA DNIe 3.0 module; `3a4b806` feat: sign DNIe 3.0 pages with a single PIN through the IDEMIA PKCS#11 module.
 
 ## Acceptance criteria
 
