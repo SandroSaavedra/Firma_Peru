@@ -104,10 +104,9 @@ marcada; **Todas las páginas** (una firma y el sello repetido en las demás) y
   de la página siguiente y **no guarda** ese documento. El `_firmado.pdf` solo
   se escribe cuando todas las páginas quedaron firmadas.
 - **Tarda**: cada página es una firma completa. En una prueba con un documento
-  real de 569 páginas y 224 MB, sin tarjeta, el PDF tardó unos 6 minutos (de
-  0,45 a 0,85 s por página). Con el DNIe hay que sumar la firma de la tarjeta
-  en cada página, así que un documento de ese tamaño puede tardar de 10 a
-  15 minutos. El archivo crece unos 30 KB por página.
+  real de 569 páginas y 224 MB, sin tarjeta, las 8 partes tardaron unos 70
+  segundos (de 0,1 a 0,14 s por página). Con el DNIe hay que sumar la firma de
+  la tarjeta en cada página. Cada parte crece unos 12 KB por página.
 - Funciona también en PDF ya firmados (las firmas anteriores siguen válidas) y
   en documentos certificados que admiten cambios.
 
