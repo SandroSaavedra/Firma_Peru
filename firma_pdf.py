@@ -44,6 +44,16 @@ operación. Con nivel 2 o 3 solo se coloca el campo de firma en su página
 (modo "solo_campo"): el nivel 2 no permite anotaciones y el 3 se trata igual
 por simplicidad.
 
+Firma real en cada página (`paginas="cada_pagina"`): una firma PAdES por
+página, cada una en su propia revisión incremental y con su PROPIO campo de
+firma de UN solo widget en esa página (nombres FirmaDNIe, FirmaDNIe_2...,
+sin chocar con los campos de firmantes anteriores). Sin /Stamp ni /Link. Un
+campo de firma nuevo por revisión es un cambio permitido (también en
+documentos certificados con DocMDP 2 o 3, como llenado de formulario), así
+que cada firma deja válidas a las anteriores. Las revisiones se encadenan en
+memoria y el archivo de salida se escribe (temporal + reemplazo) solo cuando
+todas las páginas quedaron firmadas; si se cancela o falla, no queda archivo.
+
 Tipos de sello (sin borde, letra sin serifa: Arial incrustada si está
 disponible, si no Helvetica estándar):
   - "firma": logo del usuario a la izquierda (≈38 % del ancho) y texto a la
@@ -60,11 +70,12 @@ import json
 import logging
 import math
 import os
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from pyhanko.pdf_utils import generic
 from pyhanko.pdf_utils.content import RawContent
@@ -105,7 +116,7 @@ PLANTILLAS_SELLO = {
 FORMATOS_FECHA = {"firma": "%Y/%m/%d %H:%M:%S%z", "visto_bueno": "%d.%m.%Y %H:%M:%S %:z"}
 TEXTO_SELLO = PLANTILLAS_SELLO["firma"]
 NOMBRE_CAMPO = "FirmaDNIe"
-PAGINAS_VALIDAS = ("todas", "ultima")
+PAGINAS_VALIDAS = ("todas", "ultima", "cada_pagina")
 _TOLERANCIA = 1e-6
 
 # Geometría de los sellos (fracciones de la caja) y tamaños de letra en pt.
@@ -144,6 +155,18 @@ class ErrorFirma(ValueError):
     """Error de datos o de documento, con mensaje apto para el usuario."""
 
 
+class FirmaCancelada(ErrorFirma):
+    """El usuario canceló la firma página por página; no se escribió ningún archivo."""
+
+    def __init__(self, mensaje: str = "Se canceló la firma. El documento no se firmó."):
+        super().__init__(mensaje)
+
+
+# Avance de la firma página por página: (páginas firmadas, total). Si devuelve
+# False, la firma se cancela (FirmaCancelada).
+Progreso = Callable[[int, int], "bool | None"]
+
+
 @dataclass
 class PosicionRelativa:
     """Esquina inferior izquierda del sello en fracciones de la vista de la página (origen abajo-izq.)."""
@@ -168,7 +191,7 @@ class OpcionesFirma:
     posicion: PosicionRelativa | None = None  # None = posición predeterminada del tipo
     # Posición propia de algunas páginas (índice desde 0); las demás usan `posicion`.
     posiciones_paginas: dict[int, PosicionRelativa] | None = None
-    paginas: str = "todas"  # "todas" | "ultima"
+    paginas: str = "todas"  # "todas" | "ultima" | "cada_pagina"
     pagina_firma: int = -1  # página con el campo de firma real (negativo = desde el final)
     tipo: TipoSello = "firma"
     texto_sello: str | None = None  # None = texto del tipo de sello
@@ -191,6 +214,8 @@ class ResultadoFirma:
     modo: str
     firmas_previas: int
     campo: str
+    # Campos firmados en esta operación (uno; con "cada_pagina", uno por página en orden).
+    campos: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -320,14 +345,17 @@ def _validar_plantilla(plantilla: str, parametros: dict):
         ) from e
 
 
-def _nombre_campo_libre(handler, base: str) -> str:
-    existentes = {nombre for nombre, _, _ in fields.enumerate_sig_fields(handler)}
+def _nombre_libre(existentes, base: str) -> str:
     if base not in existentes:
         return base
     n = 2
     while f"{base}_{n}" in existentes:
         n += 1
     return f"{base}_{n}"
+
+
+def _nombre_campo_libre(handler, base: str) -> str:
+    return _nombre_libre({nombre for nombre, _, _ in fields.enumerate_sig_fields(handler)}, base)
 
 
 # --- estilos de sello -----------------------------------------------------------
@@ -475,10 +503,35 @@ def recortar_margenes(imagen, umbral: int = 245):
     return imagen.crop(caja) if caja else imagen
 
 
+def _imagen_reutilizable(imagen):
+    """
+    PdfImage que se incrusta UNA sola vez por documento. pyHanko vuelve a
+    incrustar la imagen con cada writer nuevo; con "cada_pagina" hay un writer
+    (una revisión) por página y el logo se repetiría en cada firma (cientos de
+    KB por página). Aquí, después de la primera vez, el sello de las firmas
+    siguientes apunta al MISMO XObject de imagen, ya escrito en una revisión
+    anterior del mismo documento (las revisiones se encadenan sobre un solo
+    flujo, así que el número de objeto sigue siendo válido).
+    """
+    from pyhanko.pdf_utils.images import PdfImage
+
+    class _ImagenReutilizable(PdfImage):
+        _incrustada: tuple[int, int] | None = None
+
+        @property
+        def image_ref(self) -> generic.IndirectObject:
+            if self._incrustada is not None:
+                return generic.IndirectObject(*self._incrustada, self.writer)
+            ref = super().image_ref
+            self._incrustada = (ref.idnum, ref.generation)
+            return ref
+
+    return _ImagenReutilizable(imagen)
+
+
 def _cargar_imagen(ruta, descripcion: str, fondo_transparente: bool = False):
     """Imagen para pyHanko (logo o imagen de visto bueno), o ErrorFirma si no se puede leer."""
     from PIL import Image, UnidentifiedImageError
-    from pyhanko.pdf_utils.images import PdfImage
 
     try:
         with Image.open(ruta) as original:
@@ -492,7 +545,7 @@ def _cargar_imagen(ruta, descripcion: str, fondo_transparente: bool = False):
         imagen = recortar_margenes(imagen)
         if imagen.mode not in ("RGB", "RGBA", "L", "LA"):
             imagen = imagen.convert("RGBA")
-    return PdfImage(imagen)
+    return _imagen_reutilizable(imagen)
 
 
 Rect = tuple[float, float, float, float]  # (x0, y0, x1, y1) en pt, origen abajo a la izquierda
@@ -771,11 +824,91 @@ def _agregar_sellos(writer, campo: str, firmante: str, paginas, pagina_firma: in
         writer.register_annotation(pagina_ref, writer.add_object(enlace))
 
 
-def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma | None = None) -> ResultadoFirma:
+def _abrir_para_firmar(flujo) -> IncrementalPdfFileWriter:
+    """Writer incremental sobre `flujo` (archivo o BytesIO); abre los PDF cifrados sin contraseña de usuario."""
+    writer = IncrementalPdfFileWriter(flujo, strict=False)
+    _desbloquear(writer.prev)
+    if writer.prev.encrypted:
+        writer.encrypt("")
+    return writer
+
+
+@dataclass
+class _Documento:
+    """Datos del documento que valen para todas sus firmas."""
+
+    total: int
+    pagina_firma: int
+    posiciones_paginas: dict[int, PosicionRelativa]
+    firmas_previas: int
+    # "contenido" o "solo_campo" (documento certificado con DocMDP 2 o 3; ver ResultadoFirma).
+    modo: str
+
+
+def _examinar_para_firmar(writer, opciones: OpcionesFirma) -> _Documento:
+    """Comprueba páginas, posiciones y certificación (DocMDP 1 se rechaza) antes de firmar."""
+    total = _total_paginas(writer)
+    if total < 1:
+        raise ErrorFirma("El PDF no tiene páginas.")
+    pagina_firma = opciones.pagina_firma if opciones.pagina_firma >= 0 else total + opciones.pagina_firma
+    if not 0 <= pagina_firma < total:
+        raise ErrorFirma(f"La página de firma {pagina_firma + 1} no existe (el PDF tiene {total}).")
+    posiciones_paginas = _validar_posiciones_paginas(opciones.posiciones_paginas, total)
+    firmas_previas = len(writer.prev.embedded_signatures)
+    nivel_docmdp = _nivel_docmdp(writer.prev)
+    if nivel_docmdp == fields.MDPPerm.NO_CHANGES.value:
+        raise ErrorFirma(
+            "El documento está certificado y no permite ningún cambio, ni siquiera "
+            "nuevas firmas. No se puede firmar sin invalidar la certificación."
+        )
+    # Con firmas previas de aprobación se sella igual que sin firmas; un
+    # documento certificado (DocMDP 2 o 3) solo recibe campos de firma
+    # (sin anotaciones /Stamp ni /Link).
+    modo = "solo_campo" if nivel_docmdp is not None else "contenido"
+    return _Documento(total, pagina_firma, posiciones_paginas, firmas_previas, modo)
+
+
+def _escribir_atomico(salida, datos):
+    """
+    Escribe `datos` en `salida` a través de un temporal de la misma carpeta y
+    un reemplazo: nunca queda un archivo a medias, y si algo falla el archivo
+    que ya existía en `salida` no cambia.
+    """
+    salida = Path(salida)
+    descriptor, temporal = tempfile.mkstemp(dir=salida.parent, prefix=f".{salida.stem}.", suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "wb") as f:
+            f.write(datos)
+        os.replace(temporal, salida)
+    except BaseException:
+        try:
+            os.unlink(temporal)
+        except OSError:
+            pass
+        raise
+
+
+def _avisar(progreso: Progreso | None, hechas: int, total: int):
+    """Informa el avance; si `progreso` devuelve False, cancela (FirmaCancelada)."""
+    if progreso is not None and progreso(hechas, total) is False:
+        logger.info("Firma página por página cancelada con %d de %d página(s) firmadas.", hechas, total)
+        raise FirmaCancelada()
+
+
+def firmar_pdf(
+    entrada,
+    salida,
+    signer,
+    firmante: str,
+    opciones: OpcionesFirma | None = None,
+    progreso: Progreso | None = None,
+) -> ResultadoFirma:
     """
     Firma `entrada` y escribe `salida`. `signer` es un `pyhanko` Signer (p. ej.
     `dnie_cng.FirmanteCNG`); con el DNIe, Windows pide el PIN durante este paso.
     El archivo de salida solo se escribe si la firma termina bien.
+    `progreso(hechas, total)` (solo con "cada_pagina") recibe el avance antes
+    de la primera página y después de cada una; si devuelve False se cancela.
     """
     opciones = opciones or OpcionesFirma()
     if opciones.paginas not in PAGINAS_VALIDAS:
@@ -803,41 +936,34 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
     posicion = opciones.posicion or posicion_predeterminada(tipo)
     estilo = estilo_sello(tipo, *TAMANOS_SELLO[tipo], texto, fecha, imagen)
 
+    def firmador_pdf(campo: str) -> signers.PdfSigner:
+        meta = signers.PdfSignatureMetadata(
+            field_name=campo,
+            md_algorithm="sha256",
+            subfilter=fields.SigSeedSubFilter.PADES,
+            reason=motivo,
+            location=lugar or None,
+        )
+        return signers.PdfSigner(meta, signer=signer, stamp_style=estilo)
+
+    if opciones.paginas == "cada_pagina":
+        return _firmar_cada_pagina(entrada, salida, opciones, posicion, firmador_pdf, progreso)
+
     with open(entrada, "rb") as inf:
-        writer = IncrementalPdfFileWriter(inf, strict=False)
-        _desbloquear(writer.prev)
-        if writer.prev.encrypted:
-            writer.encrypt("")
-        total = _total_paginas(writer)
-        if total < 1:
-            raise ErrorFirma("El PDF no tiene páginas.")
-        pagina_firma = opciones.pagina_firma if opciones.pagina_firma >= 0 else total + opciones.pagina_firma
-        if not 0 <= pagina_firma < total:
-            raise ErrorFirma(f"La página de firma {pagina_firma + 1} no existe (el PDF tiene {total}).")
-        posiciones_paginas = _validar_posiciones_paginas(opciones.posiciones_paginas, total)
+        writer = _abrir_para_firmar(inf)
+        doc = _examinar_para_firmar(writer, opciones)
+        pagina_firma = doc.pagina_firma
 
         def posicion_de(indice: int) -> PosicionRelativa:
-            return posiciones_paginas.get(indice, posicion)
-
-        firmas_previas = len(writer.prev.embedded_signatures)
-        nivel_docmdp = _nivel_docmdp(writer.prev)
-        if nivel_docmdp == fields.MDPPerm.NO_CHANGES.value:
-            raise ErrorFirma(
-                "El documento está certificado y no permite ningún cambio, ni siquiera "
-                "nuevas firmas. No se puede firmar sin invalidar la certificación."
-            )
-        # Con firmas previas de aprobación se sella igual que sin firmas; un
-        # documento certificado (DocMDP 2 o 3) solo recibe el campo de firma
-        # (sin anotaciones en las demás páginas).
-        modo = "solo_campo" if nivel_docmdp is not None else "contenido"
+            return doc.posiciones_paginas.get(indice, posicion)
 
         paginas = [pagina_firma]
         # "todas": el campo de firma (un solo widget) va en su página y las
         # demás reciben un /Stamp con la misma apariencia más un /Link, en la
         # misma revisión (cubiertos por la firma).
-        sellos_extra = modo == "contenido" and opciones.paginas == "todas"
+        sellos_extra = doc.modo == "contenido" and opciones.paginas == "todas"
         if sellos_extra:
-            paginas = list(range(total))
+            paginas = list(range(doc.total))
 
         campo = _nombre_campo_libre(writer, opciones.nombre_campo)
         caja_campo = rect_sello(posicion_de(pagina_firma), vista_de_pagina(writer, pagina_firma), tipo)
@@ -846,14 +972,7 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
             writer, fields.SigFieldSpec(sig_field_name=campo, on_page=pagina_firma, box=caja_campo)
         )
 
-        meta = signers.PdfSignatureMetadata(
-            field_name=campo,
-            md_algorithm="sha256",
-            subfilter=fields.SigSeedSubFilter.PADES,
-            reason=motivo,
-            location=lugar or None,
-        )
-        pdf_signer = signers.PdfSigner(meta, signer=signer, stamp_style=estilo)
+        pdf_signer = firmador_pdf(campo)
         buffer = io.BytesIO()
         if sellos_extra:
 
@@ -864,13 +983,58 @@ def firmar_pdf(entrada, salida, signer, firmante: str, opciones: OpcionesFirma |
         else:
             pdf_signer.sign_pdf(writer, output=buffer)
 
-    Path(salida).write_bytes(buffer.getvalue())
+    with buffer.getbuffer() as datos:
+        _escribir_atomico(salida, datos)
     return ResultadoFirma(
         salida=str(salida),
-        total_paginas=total,
+        total_paginas=doc.total,
         paginas_selladas=paginas,
         pagina_firma=pagina_firma,
-        modo=modo,
-        firmas_previas=firmas_previas,
+        modo=doc.modo,
+        firmas_previas=doc.firmas_previas,
         campo=campo,
+        campos=[campo],
+    )
+
+
+def _firmar_cada_pagina(entrada, salida, opciones, posicion, firmador_pdf, progreso) -> ResultadoFirma:
+    """
+    Una firma por página, en orden, cada una con su PROPIO campo de firma (un
+    solo widget, en esa página) y en su propia revisión incremental.
+
+    Las revisiones se encadenan sobre UN BytesIO: cada firma se agrega al
+    final del mismo búfer (`in_place`), sin copiar el documento ni pasar por
+    el disco; para la página siguiente solo se vuelven a leer las tablas de
+    referencias. La salida se escribe una sola vez, al terminar todas.
+    """
+    flujo = io.BytesIO(Path(entrada).read_bytes())
+    writer = _abrir_para_firmar(flujo)
+    doc = _examinar_para_firmar(writer, opciones)
+    existentes = {nombre for nombre, _, _ in fields.enumerate_sig_fields(writer)}
+    campos: list[str] = []
+    _avisar(progreso, 0, doc.total)
+    for indice in range(doc.total):
+        if indice:
+            writer = _abrir_para_firmar(flujo)
+        campo = _nombre_libre(existentes, opciones.nombre_campo)
+        existentes.add(campo)
+        caja = rect_sello(
+            doc.posiciones_paginas.get(indice, posicion), vista_de_pagina(writer, indice), opciones.tipo
+        )
+        fields.append_signature_field(writer, fields.SigFieldSpec(sig_field_name=campo, on_page=indice, box=caja))
+        firmador_pdf(campo).sign_pdf(writer, in_place=True)
+        campos.append(campo)
+        _avisar(progreso, indice + 1, doc.total)
+
+    with flujo.getbuffer() as datos:
+        _escribir_atomico(salida, datos)
+    return ResultadoFirma(
+        salida=str(salida),
+        total_paginas=doc.total,
+        paginas_selladas=list(range(doc.total)),
+        pagina_firma=doc.total - 1,
+        modo=doc.modo,
+        firmas_previas=doc.firmas_previas,
+        campo=campos[-1],
+        campos=campos,
     )

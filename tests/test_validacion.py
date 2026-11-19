@@ -176,3 +176,29 @@ def test_agregar_un_widget_que_no_es_de_firma_no_se_permite(tmp_path, pdf_todas)
     alterado = _revision(pdf_todas, tmp_path / "widget.pdf", agregar_widget)
     (firma,) = validar_pdf(alterado, permitir_red=False)
     assert firma["modificaciones"] == "no_permitidas"
+
+
+@pytest.mark.parametrize("permiso", ["FILL_FORMS", "ANNOTATE"])
+def test_firma_visible_despues_de_certificar_es_cambio_permitido(tmp_path, pdf_multipagina, firmante, material_prueba, permiso):
+    """
+    Como Acrobat: con DocMDP 2 o 3, un campo de firma visible nuevo es llenado
+    de formulario (pyHanko por omisión lo rechaza después de una certificación).
+    """
+    from pyhanko.sign import fields, signers
+
+    certificado = tmp_path / "certificado.pdf"
+    with open(pdf_multipagina, "rb") as inf:
+        meta = signers.PdfSignatureMetadata(
+            field_name="Autor", certify=True, docmdp_permissions=getattr(fields.MDPPerm, permiso)
+        )
+        with open(certificado, "wb") as outf:
+            signers.PdfSigner(meta, signer=firmante).sign_pdf(IncrementalPdfFileWriter(inf), output=outf)
+    salida = tmp_path / "s.pdf"
+    firmar_pdf(certificado, salida, firmante, "PRUEBA", OpcionesFirma(paginas="ultima"))
+
+    certificacion, aprobacion = validar_pdf(salida, permitir_red=False, raices_extra=[material_prueba[1]])
+    assert certificacion["modificaciones"] == "permitidas", certificacion
+    assert certificacion["docmdp_ok"] is True
+    assert certificacion["nivel_modificacion"] == "FORM_FILLING"
+    assert certificacion["estado"] == "valida"
+    assert aprobacion["estado"] == "valida"

@@ -29,7 +29,14 @@ Cambios posteriores a una firma (análisis de diferencias de pyHanko):
     otra clave de una página, quitar anotaciones, modificar anotaciones ya
     existentes (por ejemplo, mover un sello firmado) o la apariencia de una
     firma anterior, y agregar widgets que no sean de campos de firma nuevos.
-  - Documentos certificados (DocMDP): se usa la política de pyHanko tal cual.
+  - Documentos certificados (DocMDP): POLITICA_CERTIFICADO, la de pyHanko
+    con un solo cambio: acepta campos de firma VISIBLES nuevos
+    (`allow_new_visible_after_certify`). pyHanko los rechaza por omisión
+    después de una certificación («más estricto que Acrobat», dice su propia
+    documentación); Acrobat los admite con DocMDP 2 o 3 como llenado de
+    formulario. Las firmas que se agregan a un documento certificado (una sola
+    o una por página con «cada_pagina») son campos de firma visibles. Las
+    anotaciones que no son widgets siguen sin admitirse.
 """
 from __future__ import annotations
 
@@ -165,9 +172,21 @@ POLITICA_SIN_CERTIFICACION = StandardDiffPolicy(
 )
 
 
+POLITICA_CERTIFICADO = StandardDiffPolicy(
+    global_rules=DEFAULT_DIFF_POLICY.global_rules,
+    form_rule=FormUpdatingRule(
+        field_rules=[
+            SigFieldCreationRule(allow_new_visible_after_certify=True),
+            SigFieldModificationRule(),
+            GenericFieldModificationRule(),
+        ],
+    ),
+)
+
+
 def politica_de_cambios(reader) -> StandardDiffPolicy:
-    """Política de diferencias: la de pyHanko si el documento está certificado (DocMDP)."""
-    return DEFAULT_DIFF_POLICY if read_certification_data(reader) is not None else POLITICA_SIN_CERTIFICACION
+    """Política de diferencias: POLITICA_CERTIFICADO si el documento está certificado (DocMDP)."""
+    return POLITICA_CERTIFICADO if read_certification_data(reader) is not None else POLITICA_SIN_CERTIFICACION
 
 
 @functools.lru_cache(maxsize=1)
