@@ -568,11 +568,22 @@ def test_icono_de_la_aplicacion_tiene_los_tamanos_de_windows():
 
 def test_la_ventana_usa_el_icono_de_la_aplicacion(monkeypatch):
     recibido = {}
+    monkeypatch.setattr(app, "configurar_registro", lambda *a, **k: None)  # no escribe el registro real
     monkeypatch.setattr(app, "crear_ventana", lambda api: object())
     monkeypatch.setattr(app.webview, "start", lambda *a, **kw: recibido.update(kw))
     monkeypatch.setattr(app.sys, "argv", ["app.py"])
     app.main()
     assert recibido["icon"] == str(app.RUTA_ICONO)
+
+
+def test_al_iniciar_se_configura_el_registro(monkeypatch):
+    llamadas = []
+    monkeypatch.setattr(app, "configurar_registro", lambda *a, **k: llamadas.append(a))
+    monkeypatch.setattr(app, "crear_ventana", lambda api: object())
+    monkeypatch.setattr(app.webview, "start", lambda *a, **kw: None)
+    monkeypatch.setattr(app.sys, "argv", ["app.py"])
+    app.main()
+    assert llamadas == [()]
 
 
 def _rect_y_motivo(ruta, indice=2):

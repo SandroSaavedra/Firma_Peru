@@ -51,6 +51,7 @@ from firma_pdf import (
     fondo_blanco_a_transparente,
     recortar_margenes,
 )
+from registro import configurar_registro
 from validacion import validar_pdf
 
 logger = logging.getLogger("firmador")
@@ -1306,7 +1307,7 @@ def crear_ventana(api: Api):
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    configurar_registro()
     api = Api()
     ventana = crear_ventana(api)
     webview.start(

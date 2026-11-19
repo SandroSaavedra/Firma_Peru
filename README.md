@@ -181,7 +181,8 @@ Genera `dist\FirmaPeru\FirmaPeru.exe` y el instalador
 `dist\installer\FirmaPeru-Setup-1.1.0.exe`. Opciones:
 
 - `-SinPruebas`: no ejecuta las pruebas antes de construir.
-- `-Version 1.2.0`: versión del instalador (predeterminada: `1.1.0`).
+- `-Version 1.2.0`: versión del instalador (predeterminada: `VERSION` de
+  `version.py`, la única fuente de la versión; cámbiela ahí al publicar).
 - `-SinInstalador`: solo genera la carpeta `dist\FirmaPeru`; para distribuirla,
   copie la carpeta completa.
 

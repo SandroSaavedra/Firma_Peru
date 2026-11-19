@@ -3,15 +3,23 @@
 # Uso (PowerShell, en la carpeta del proyecto):  .\build.ps1
 #   -SinPruebas     omite pytest antes de construir
 #   -SinInstalador  solo genera la carpeta dist\FirmaPeru, sin compilar el instalador
-#   -Version x.y.z  version del instalador (predeterminada: 1.1.0)
+#   -Version x.y.z  version del instalador (predeterminada: la de version.py)
 param(
     [switch]$SinPruebas,
     [switch]$SinInstalador,
-    [string]$Version = "1.1.0"
+    [string]$Version
 )
 
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
+
+if (-not $Version) {
+    # Unica fuente de la version: VERSION = "x.y.z" en version.py.
+    $coincidencia = Select-String -LiteralPath (Join-Path $PSScriptRoot "version.py") -Pattern '^VERSION\s*=\s*"([^"]+)"'
+    if (-not $coincidencia) { throw "No se encontro VERSION en version.py." }
+    $Version = $coincidencia.Matches[0].Groups[1].Value
+}
+Write-Host "Version: $Version"
 
 function Find-Iscc {
     $candidatas = @(
