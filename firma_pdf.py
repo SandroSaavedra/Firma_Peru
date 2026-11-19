@@ -681,17 +681,27 @@ FLAGS_ENLACE = 4
 # como escapes \uXXXX de JavaScript. `signatureValidate()` devuelve -1 (no es
 # campo de firma), 0 (sin firmar), 1 (validez desconocida), 2 (no válida),
 # 3 (válida, identidad no verificada) o 4 (válida); `signatureInfo()` da el
-# nombre del firmante (`name`) y la fecha (`date`, un Date).
+# nombre del firmante (`name`) y la fecha (`date`, un Date). Los textos imitan
+# los de la ventana «Estado de validación de la firma» de Acrobat.
 _SCRIPT_ESTADO_FIRMA = (
     r'var p = "\n\nEl campo de esta firma est\u00e1 en la p\u00e1gina __PAGINA__.";'
     r" try {"
     r" var f = this.getField(__CAMPO__);"
     r" var e = f.signatureValidate();"
     r" var i = f.signatureInfo();"
-    r' var t = ["Sin firmar", "Validez desconocida", "Firma NO V\u00c1LIDA",'
-    r' "Firma v\u00e1lida (identidad no verificada)", "Firma V\u00c1LIDA"][e] || "Validez desconocida";'
+    r' var n = i.name || "";'
+    r' var m = "- No ha habido modificaciones en el documento desde que se firm\u00f3.";'
+    r" var t;"
+    r' if (e == 4) t = "La firma es V\u00c1LIDA, firmada por " + n + ".\n" + m'
+    r' + "\n- La identidad del firmante es v\u00e1lida.";'
+    r' else if (e == 3) t = "La validez de la firma es DESCONOCIDA, firmada por " + n + ".\n" + m'
+    r' + "\n- No se ha podido verificar la identidad del firmante.";'
+    r' else if (e == 2) t = "La firma NO ES V\u00c1LIDA, firmada por " + n'
+    r' + ".\n- Revise los detalles en el panel Firmas.";'
+    r' else if (e == 0) t = "El campo de firma est\u00e1 vac\u00edo.";'
+    r' else t = "La validez de la firma es DESCONOCIDA, firmada por " + n + ".";'
     r' var d = i.date ? util.printd("dd/mm/yyyy HH:MM:ss", i.date) : "";'
-    r' app.alert("Firmado digitalmente por: " + i.name + "\nFecha: " + d + "\nEstado: " + t + p, 3);'
+    r' app.alert(t + (d ? "\n\nFecha: " + d : "") + p, 3);'
     r" } catch (x) {"
     r' app.alert("Sello de la firma digital " + __CAMPO__ + "." + p, 3);'
     r" }"

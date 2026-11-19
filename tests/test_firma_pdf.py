@@ -13,6 +13,23 @@ from firma_pdf import ErrorFirma, OpcionesFirma, firmar_pdf
 A3 = (0, 0, 842, 1191)
 
 
+def test_script_estado_usa_las_frases_de_acrobat():
+    script = firma_pdf.script_estado_firma("FirmaDNIe", 596)
+    assert script.isascii()
+    texto = script.encode("ascii").decode("unicode_escape")  # á -> á, \n -> salto
+    for frase in (
+        "La firma es VÁLIDA, firmada por ",
+        "La validez de la firma es DESCONOCIDA, firmada por ",
+        "La firma NO ES VÁLIDA, firmada por ",
+        "- No ha habido modificaciones en el documento desde que se firmó.",
+        "- La identidad del firmante es válida.",
+        "- No se ha podido verificar la identidad del firmante.",
+        "Fecha: ",
+        "El campo de esta firma está en la página 597.",
+    ):
+        assert frase in texto, frase
+
+
 def _leer(ruta):
     return PdfFileReader(open(ruta, "rb"), strict=False)
 
