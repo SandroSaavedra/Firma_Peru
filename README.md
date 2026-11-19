@@ -219,7 +219,7 @@ Las pruebas no usan la tarjeta: la firma de Windows se simula.
 ```
 
 Genera `dist\FirmaPeru\FirmaPeru.exe` y el instalador
-`dist\installer\FirmaPeru-Setup-1.1.1.exe`. Opciones:
+`dist\installer\FirmaPeru-Setup-1.2.0.exe`. Opciones:
 
 - `-SinPruebas`: no ejecuta las pruebas antes de construir.
 - `-Version 1.2.0`: versión del instalador (predeterminada: `VERSION` de
@@ -250,7 +250,7 @@ Qué hace el instalador:
 Instalación silenciosa (por ejemplo, para distribuirlo con un script):
 
 ```powershell
-.\FirmaPeru-Setup-1.1.1.exe /VERYSILENT /SUPPRESSMSGBOXES
+.\FirmaPeru-Setup-1.2.0.exe /VERYSILENT /SUPPRESSMSGBOXES
 ```
 
 Para desinstalar, use **Configuración > Aplicaciones > Aplicaciones instaladas >
