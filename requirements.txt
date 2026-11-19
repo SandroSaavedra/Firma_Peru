@@ -3,6 +3,7 @@ fonttools==4.68.0
 uharfbuzz==0.57.0
 pillow==13.0.0
 pyhanko-certvalidator==0.33.0
+pypdf==6.21.2  # divide en partes los documentos largos (firma real en cada página)
 asn1crypto==1.5.1
 cryptography==50.0.2
 pywebview==6.2.1

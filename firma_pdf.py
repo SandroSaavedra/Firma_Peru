@@ -54,6 +54,17 @@ que cada firma deja válidas a las anteriores. Las revisiones se encadenan en
 memoria y el archivo de salida se escribe (temporal + reemplazo) solo cuando
 todas las páginas quedaron firmadas; si se cancela o falla, no queda archivo.
 
+Firma real en cada página por partes: un documento de más de
+PAGINAS_POR_PARTE páginas lleva cientos de firmas, y con tantas Acrobat no
+termina de validarlas (o marca algunas como dañadas) y ReFirma ni siquiera
+las lista. Por eso, si el documento no tiene firmas, se divide en partes de
+páginas consecutivas (pypdf) y se firma cada página de cada parte con la
+misma sesión de firma. Las partes van en una carpeta junto al destino elegido
+(`nombres_de_partes`), que se arma en una carpeta temporal y se renombra al
+final: si se cancela o falla, no queda nada. Un documento que ya tiene firmas
+y más de PAGINAS_POR_PARTE páginas no se divide (se invalidarían sus firmas):
+se rechaza con `mensaje_sin_division`.
+
 Tipos de sello (sin borde, letra sin serifa: Arial incrustada si está
 disponible, si no Helvetica estándar):
   - "firma": logo del usuario a la izquierda (≈38 % del ancho) y texto a la
@@ -70,13 +81,17 @@ import json
 import logging
 import math
 import os
+import re
+import shutil
 import tempfile
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Literal
 
+from pypdf import PdfReader, PdfWriter
 from pyhanko.pdf_utils import generic
 from pyhanko.pdf_utils.content import RawContent
 from pyhanko.pdf_utils.font import FontEngineFactory, SimpleFontEngineFactory
@@ -117,6 +132,9 @@ FORMATOS_FECHA = {"firma": "%Y/%m/%d %H:%M:%S%z", "visto_bueno": "%d.%m.%Y %H:%M
 TEXTO_SELLO = PLANTILLAS_SELLO["firma"]
 NOMBRE_CAMPO = "FirmaDNIe"
 PAGINAS_VALIDAS = ("todas", "ultima", "cada_pagina")
+# «cada_pagina»: páginas por parte de un documento largo. Con dos firmantes son
+# 150 firmas por archivo, la cantidad que Acrobat y ReFirma validaron bien.
+PAGINAS_POR_PARTE = 75
 _TOLERANCIA = 1e-6
 
 # Geometría de los sellos (fracciones de la caja) y tamaños de letra en pt.
@@ -163,8 +181,10 @@ class FirmaCancelada(ErrorFirma):
 
 
 # Avance de la firma página por página: (páginas firmadas, total). Si devuelve
-# False, la firma se cancela (FirmaCancelada).
-Progreso = Callable[[int, int], "bool | None"]
+# False, la firma se cancela (FirmaCancelada). Un documento dividido en partes
+# además recibe `parte` y `partes` (por nombre); `hechas` y `total` siguen
+# siendo las páginas de todo el documento.
+Progreso = Callable[..., "bool | None"]
 
 
 @dataclass
@@ -216,6 +236,10 @@ class ResultadoFirma:
     campo: str
     # Campos firmados en esta operación (uno; con "cada_pagina", uno por página en orden).
     campos: list[str] = field(default_factory=list)
+    # Documento dividido en partes («cada_pagina» con más de PAGINAS_POR_PARTE
+    # páginas): la carpeta (también en `salida`) y la ruta de cada parte, en orden.
+    carpeta: str | None = None
+    partes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -888,11 +912,83 @@ def _escribir_atomico(salida, datos):
         raise
 
 
-def _avisar(progreso: Progreso | None, hechas: int, total: int):
-    """Informa el avance; si `progreso` devuelve False, cancela (FirmaCancelada)."""
-    if progreso is not None and progreso(hechas, total) is False:
+def _avisar(progreso: Progreso | None, hechas: int, total: int, **parte):
+    """
+    Informa el avance; si `progreso` devuelve False, cancela (FirmaCancelada).
+    `parte` (parte=, partes=) solo se envía cuando el documento se divide.
+    """
+    if progreso is not None and progreso(hechas, total, **parte) is False:
         logger.info("Firma página por página cancelada con %d de %d página(s) firmadas.", hechas, total)
         raise FirmaCancelada()
+
+
+# --- firma real en cada página por partes ------------------------------------------
+
+
+def mensaje_sin_division(total_paginas: int, firmas_previas: int) -> str | None:
+    """
+    Por qué «cada_pagina» no se puede usar en este documento, o None si se
+    puede: uno que ya tiene firmas y más de PAGINAS_POR_PARTE páginas no se
+    divide, porque cada parte invalidaría esas firmas.
+    """
+    if firmas_previas and total_paginas > PAGINAS_POR_PARTE:
+        return (
+            f"Este PDF ya tiene firmas y más de {PAGINAS_POR_PARTE} hojas: no se puede dividir sin "
+            "invalidarlas. Pida al primer firmante el expediente dividido en partes."
+        )
+    return None
+
+
+def rangos_de_partes(total_paginas: int) -> list[tuple[int, int]]:
+    """Páginas de cada parte como (inicio, fin) desde 0 y sin incluir `fin`: consecutivas, de PAGINAS_POR_PARTE."""
+    return [(inicio, min(inicio + PAGINAS_POR_PARTE, total_paginas)) for inicio in range(0, total_paginas, PAGINAS_POR_PARTE)]
+
+
+# Sufijo de salida de cada tipo de sello (lo agrega la aplicación), quizá seguido de « (2)».
+_SUFIJO_SALIDA = re.compile(r"(?P<raiz>.+?)(?P<sufijo>_firmado|_vb)(?: \(\d+\))?")
+
+
+def nombres_de_partes(salida, partes: int) -> tuple[Path, list[str]]:
+    """
+    Carpeta y nombres de archivo de un documento dividido, a partir del destino
+    elegido (`salida`, p. ej. «expediente_firmado.pdf»): la carpeta
+    «expediente_firmado» junto a él, con «expediente_parte01de07_firmado.pdf»,
+    etc. El número va con ceros a la izquierda, con tantos dígitos como el
+    total (al menos 2). Si el destino no termina en «_firmado» ni en «_vb»
+    (elegido a mano), se agrega «_firmado» a la carpeta.
+    """
+    salida = Path(salida)
+    coincidencia = _SUFIJO_SALIDA.fullmatch(salida.stem)
+    if coincidencia:
+        raiz, sufijo, carpeta = coincidencia["raiz"], coincidencia["sufijo"], salida.with_suffix("")
+    else:
+        raiz, sufijo = salida.stem, "_firmado"
+        carpeta = salida.with_name(f"{salida.stem}{sufijo}")
+    ancho = max(2, len(str(partes)))
+    return carpeta, [f"{raiz}_parte{n:0{ancho}d}de{partes:0{ancho}d}{sufijo}.pdf" for n in range(1, partes + 1)]
+
+
+def _extraer_paginas(lector: PdfReader, inicio: int, fin: int) -> bytes:
+    """PDF nuevo con las páginas [inicio, fin) del original; los objetos repetidos se guardan una vez."""
+    escritor = PdfWriter()
+    for indice in range(inicio, fin):
+        escritor.add_page(lector.pages[indice])
+    escritor.compress_identical_objects()
+    flujo = io.BytesIO()
+    escritor.write(flujo)
+    return flujo.getvalue()
+
+
+def _mover_a_carpeta_libre(temporal: Path, carpeta: Path) -> Path:
+    """Renombra la carpeta temporal a `carpeta` o, si ya existe, a «carpeta (2)», «(3)»... Nunca reemplaza."""
+    n = 1
+    while True:
+        destino = carpeta if n == 1 else carpeta.with_name(f"{carpeta.name} ({n})")
+        try:
+            os.rename(temporal, destino)
+            return destino
+        except FileExistsError:
+            n += 1
 
 
 def firmar_pdf(
@@ -997,22 +1093,16 @@ def firmar_pdf(
     )
 
 
-def _firmar_cada_pagina(entrada, salida, opciones, posicion, firmador_pdf, progreso) -> ResultadoFirma:
+def _firmar_paginas(flujo, writer, doc, opciones, posicion, firmador_pdf, al_firmar) -> list[str]:
     """
-    Una firma por página, en orden, cada una con su PROPIO campo de firma (un
-    solo widget, en esa página) y en su propia revisión incremental.
-
-    Las revisiones se encadenan sobre UN BytesIO: cada firma se agrega al
-    final del mismo búfer (`in_place`), sin copiar el documento ni pasar por
-    el disco; para la página siguiente solo se vuelven a leer las tablas de
-    referencias. La salida se escribe una sola vez, al terminar todas.
+    Firma cada página de `doc` (abierto en `writer` sobre `flujo`), en orden,
+    cada una con su PROPIO campo de firma (un solo widget, en esa página) y en
+    su propia revisión incremental. Las revisiones se encadenan sobre el mismo
+    BytesIO (`in_place`); para la página siguiente solo se vuelven a leer las
+    tablas de referencias. Llama a `al_firmar(hechas)` después de cada página.
     """
-    flujo = io.BytesIO(Path(entrada).read_bytes())
-    writer = _abrir_para_firmar(flujo)
-    doc = _examinar_para_firmar(writer, opciones)
     existentes = {nombre for nombre, _, _ in fields.enumerate_sig_fields(writer)}
     campos: list[str] = []
-    _avisar(progreso, 0, doc.total)
     for indice in range(doc.total):
         if indice:
             writer = _abrir_para_firmar(flujo)
@@ -1024,8 +1114,37 @@ def _firmar_cada_pagina(entrada, salida, opciones, posicion, firmador_pdf, progr
         fields.append_signature_field(writer, fields.SigFieldSpec(sig_field_name=campo, on_page=indice, box=caja))
         firmador_pdf(campo).sign_pdf(writer, in_place=True)
         campos.append(campo)
-        _avisar(progreso, indice + 1, doc.total)
+        al_firmar(indice + 1)
+    return campos
 
+
+def _firmar_cada_pagina(entrada, salida, opciones, posicion, firmador_pdf, progreso) -> ResultadoFirma:
+    """
+    Una firma por página (`_firmar_paginas`), sin copiar el documento ni pasar
+    por el disco. La salida se escribe una sola vez, al terminar todas.
+
+    Con más de PAGINAS_POR_PARTE páginas el documento se divide en partes
+    (`_firmar_por_partes`); si además ya tiene firmas, se rechaza antes de
+    firmar nada (`mensaje_sin_division`).
+    """
+    original = Path(entrada).read_bytes()
+    flujo = io.BytesIO(original)
+    writer = _abrir_para_firmar(flujo)
+    doc = _examinar_para_firmar(writer, opciones)
+    motivo = mensaje_sin_division(doc.total, doc.firmas_previas)
+    if motivo:
+        logger.info(
+            "Firma por partes rechazada: %d página(s) y %d firma(s) previa(s).", doc.total, doc.firmas_previas
+        )
+        raise ErrorFirma(motivo)
+    if doc.total > PAGINAS_POR_PARTE:
+        writer = flujo = None  # las partes salen de `original`: el documento no se copia
+        return _firmar_por_partes(original, salida, opciones, doc, posicion, firmador_pdf, progreso)
+
+    _avisar(progreso, 0, doc.total)
+    campos = _firmar_paginas(
+        flujo, writer, doc, opciones, posicion, firmador_pdf, lambda hechas: _avisar(progreso, hechas, doc.total)
+    )
     with flujo.getbuffer() as datos:
         _escribir_atomico(salida, datos)
     return ResultadoFirma(
@@ -1037,4 +1156,84 @@ def _firmar_cada_pagina(entrada, salida, opciones, posicion, firmador_pdf, progr
         firmas_previas=doc.firmas_previas,
         campo=campos[-1],
         campos=campos,
+    )
+
+
+def _firmar_por_partes(original: bytes, salida, opciones, doc, posicion, firmador_pdf, progreso) -> ResultadoFirma:
+    """
+    Divide el documento (sin firmas previas) en partes de PAGINAS_POR_PARTE
+    páginas consecutivas y firma cada página de cada parte con el mismo
+    `firmador_pdf` (la misma sesión y el mismo PIN). Cada parte se arma en
+    memoria justo antes de firmarla y se guarda en una carpeta temporal junto
+    al destino; al terminar, la carpeta se renombra (`nombres_de_partes`). Si
+    se cancela o algo falla, la carpeta temporal se borra y no queda nada.
+    Las posiciones propias de cada página (índices del documento) pasan a la
+    página correspondiente de su parte.
+    """
+    salida = Path(salida)
+    rangos = rangos_de_partes(doc.total)
+    partes = len(rangos)
+    carpeta, nombres = nombres_de_partes(salida, partes)
+    logger.info(
+        "Firma por partes: %d página(s) en %d parte(s) de hasta %d (%s).",
+        doc.total, partes, PAGINAS_POR_PARTE, ", ".join(f"{inicio + 1}-{fin}" for inicio, fin in rangos),
+    )
+    comienzo = time.monotonic()
+    lector = PdfReader(io.BytesIO(original))
+    if lector.is_encrypted:
+        lector.decrypt("")  # pyHanko ya comprobó que se abre sin contraseña de usuario
+    temporal = Path(tempfile.mkdtemp(dir=salida.parent, prefix=f".{carpeta.name}.", suffix=".tmp"))
+    campos: list[str] = []
+    try:
+        for numero, (inicio, fin) in enumerate(rangos, 1):
+
+            def avisar(hechas_en_parte: int, inicio=inicio, numero=numero):
+                _avisar(progreso, inicio + hechas_en_parte, doc.total, parte=numero, partes=partes)
+
+            avisar(0)
+            antes = time.monotonic()
+            pdf_parte = _extraer_paginas(lector, inicio, fin)
+            division_ms = int((time.monotonic() - antes) * 1000)
+            tamano = len(pdf_parte)
+            flujo = io.BytesIO(pdf_parte)
+            pdf_parte = None
+            opciones_parte = replace(
+                opciones,
+                pagina_firma=-1,
+                posiciones_paginas={
+                    indice - inicio: p for indice, p in doc.posiciones_paginas.items() if inicio <= indice < fin
+                },
+            )
+            writer = _abrir_para_firmar(flujo)
+            doc_parte = _examinar_para_firmar(writer, opciones_parte)
+            antes = time.monotonic()
+            campos += _firmar_paginas(flujo, writer, doc_parte, opciones_parte, posicion, firmador_pdf, avisar)
+            firma_ms = int((time.monotonic() - antes) * 1000)
+            with flujo.getbuffer() as datos:
+                (temporal / nombres[numero - 1]).write_bytes(datos)
+                tamano_firmado = datos.nbytes
+            logger.info(
+                "Parte %d de %d (páginas %d-%d): dividida en %d ms (%.1f MB), firmada en %d ms (%.1f MB).",
+                numero, partes, inicio + 1, fin, division_ms, tamano / 1e6, firma_ms, tamano_firmado / 1e6,
+            )
+            flujo = writer = None
+        carpeta = _mover_a_carpeta_libre(temporal, carpeta)
+    except BaseException:
+        shutil.rmtree(temporal, ignore_errors=True)
+        raise
+    logger.info(
+        "Firma por partes terminada en %d ms: %d parte(s) en la carpeta «%s».",
+        int((time.monotonic() - comienzo) * 1000), partes, carpeta.name,
+    )
+    return ResultadoFirma(
+        salida=str(carpeta),
+        total_paginas=doc.total,
+        paginas_selladas=list(range(doc.total)),
+        pagina_firma=doc.total - 1,
+        modo=doc.modo,
+        firmas_previas=doc.firmas_previas,
+        campo=campos[-1],
+        campos=campos,
+        carpeta=str(carpeta),
+        partes=[str(carpeta / nombre) for nombre in nombres],
     )
