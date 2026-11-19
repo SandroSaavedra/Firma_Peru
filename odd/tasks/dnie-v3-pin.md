@@ -56,7 +56,7 @@ DNIe V1/V2 (CJCOP3, ciamd.dll) is not affected: one PIN works there.
     - README «Firma real en cada página» note. Version 1.2.4 (`version.py`, `installer/FirmaPeru.iss` ×2, README ×3).
   - Pre-existing, unrelated: `tests/test_diagnostico_dnie.py::test_recolectar_hechos_nunca_lanza` reads WinSCard for real and faulthandler prints «Windows fatal exception: code 0x8010002e» (no readers). It is not an access violation, and the test passes.
   - Not verifiable without a V3 card: whether the KSP shows its prompt (and accepts the PIN) on a handle that already received `SmartCardPin`; which code a cancelled V3 prompt returns.
-  - Commit: see the Progress section.
+  - Commit: `bc5a0b6` feat: fall back to the Windows PIN prompt per page when the DNIe refuses a silent PIN.
 - [ ] T2 — PKCS#11 single-PIN path for DNIe V3.0.
   - Route: delegated writer, after T1.
 
