@@ -59,3 +59,5 @@ Find the DNIe signing key even when `NCryptEnumKeys` with no scope returns `NTE_
     - Logging (`firmador.cng`): «halladas por: sin alcance / lector «X» / almacén MY»; every reader with its state hex and enumeration result; every MY cert with CN, provider, container and key spec.
   - Known issue (outside T1's edit surface): `tests/test_registro.py::test_enumeracion_sin_llaves_nte_not_found_da_el_mensaje_amigable` now runs the real fallbacks; on a PC with a smart-card cert in MY it calls the real NCryptOpenKey with the fake provider handle 7 and faulthandler prints "Windows fatal exception: access violation" (caught by ctypes; the test passes). Fix: stub `_recolectar_hechos` and `_certificados_de_tarjeta_en_almacen` in its `_enumeracion_falsa`.
   - Pending: field check with the affected DNIe (`firmador.log` shows the path).
+- 2026-11-19 (coordinator): known issue fixed in `7a1e1ae` (stubs in `tests/test_registro.py`); full suite 301 passed with no access-violation output.
+  - Spot check on the dev PC with a real DNIe: «Llave(s) del DNIe halladas por: sin alcance (3)», so path 1 is unchanged for a working card.
