@@ -55,6 +55,7 @@ from firma_pdf import (
     recortar_margenes,
 )
 from registro import carpeta_registros, configurar_registro
+from version import VERSION
 from validacion import validar_pdf
 
 logger = logging.getLogger("firmador")
@@ -1548,6 +1549,10 @@ class Api:
         except Exception:  # noqa: BLE001 - el registro nunca debe afectar a la interfaz
             pass
         return {"ok": True}
+
+    def info_app(self) -> dict:
+        """Versión de la aplicación y carpeta de firmador.log, para el diálogo «Acerca de»."""
+        return {"ok": True, "version": VERSION, "registros": str(carpeta_registros())}
 
     def abrir_carpeta_registros(self) -> dict:
         """Abre en el Explorador la carpeta con firmador.log."""

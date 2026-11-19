@@ -196,3 +196,15 @@ def test_avance_por_pagina_con_cancelar():
     dialogo = _funcion(js, "function mostrarDialogoLote()")
     assert "Cancelar" in dialogo and "cancelarLote" in dialogo
     assert 'llamar("cancelar_lote")' in js
+
+
+def test_boton_info_muestra_version_y_registro():
+    html, js = _html(), _js()
+    assert re.search(r'<button[^>]*\bid="btn-info"[^>]*aria-label="Acerca de Firma Perú"', html)
+    assert '<use href="#i-info"/>' in _boton(html, "btn-info")
+    assert '$("btn-info")' in js
+    assert re.search(r"el\.btnInfo\.addEventListener\(\s*\"click\",\s*mostrarInfo", js)
+    cuerpo = re.search(r"async function mostrarInfo\(\) \{(.*?)\n\}", js, re.S).group(1)
+    assert 'llamar("info_app")' in cuerpo
+    assert "ACCION_ABRIR_REGISTRO" in cuerpo
+    assert 'tipo: "info"' in cuerpo

@@ -1,11 +1,11 @@
 ﻿; Inno Setup 6 script for Firma Perú.
 ; Per-user install: no administrator rights and no UAC prompt.
 ; Build with build.ps1, or manually from the project folder:
-;   ISCC.exe /DMyAppVersion=1.2.0 installer\FirmaPeru.iss
+;   ISCC.exe /DMyAppVersion=1.2.1 installer\FirmaPeru.iss
 ; Expects the PyInstaller output in dist\FirmaPeru (python -m PyInstaller firmador.spec).
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2.0"
+  #define MyAppVersion "1.2.1"
 #endif
 #define MyAppName "Firma Perú"
 #define MyAppExeName "FirmaPeru.exe"

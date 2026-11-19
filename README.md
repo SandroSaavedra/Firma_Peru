@@ -204,6 +204,9 @@ Para abrir la carpeta, use **Abrir registro de diagnóstico** (debajo del botón
 «Firmar») o **Abrir registro** en un mensaje de error. Al reportar un problema,
 envíe el archivo `firmador.log`.
 
+El botón **ⓘ** de la barra superior muestra la versión instalada y la ruta
+del registro, con un acceso directo a la carpeta.
+
 ## Pruebas
 
 ```powershell
@@ -219,10 +222,10 @@ Las pruebas no usan la tarjeta: la firma de Windows se simula.
 ```
 
 Genera `dist\FirmaPeru\FirmaPeru.exe` y el instalador
-`dist\installer\FirmaPeru-Setup-1.2.0.exe`. Opciones:
+`dist\installer\FirmaPeru-Setup-1.2.1.exe`. Opciones:
 
 - `-SinPruebas`: no ejecuta las pruebas antes de construir.
-- `-Version 1.2.0`: versión del instalador (predeterminada: `VERSION` de
+- `-Version 1.2.1`: versión del instalador (predeterminada: `VERSION` de
   `version.py`, la única fuente de la versión; cámbiela ahí al publicar).
 - `-SinInstalador`: solo genera la carpeta `dist\FirmaPeru`; para distribuirla,
   copie la carpeta completa.
@@ -250,7 +253,7 @@ Qué hace el instalador:
 Instalación silenciosa (por ejemplo, para distribuirlo con un script):
 
 ```powershell
-.\FirmaPeru-Setup-1.2.0.exe /VERYSILENT /SUPPRESSMSGBOXES
+.\FirmaPeru-Setup-1.2.1.exe /VERYSILENT /SUPPRESSMSGBOXES
 ```
 
 Para desinstalar, use **Configuración > Aplicaciones > Aplicaciones instaladas >

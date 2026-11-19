@@ -539,6 +539,8 @@ kbd { font: 600 11px var(--fuente); background: var(--superficie); border: 1px s
 .dialogo[data-tipo="pregunta"] .dialogo-icono { background: var(--aviso-suave); color: var(--aviso); }
 .dialogo[data-tipo="ok"] .ic-ok, .dialogo[data-tipo="error"] .ic-error, .dialogo[data-tipo="pregunta"] .ic-alerta { display: block; }
 .dialogo[data-tipo="clave"] .ic-candado { display: block; }
+.dialogo[data-tipo="info"] .dialogo-icono { background: var(--acento-suave); color: var(--acento); }
+.dialogo[data-tipo="info"] .ic-info { display: block; }
 /* PIN del DNIe pedido por la aplicación (firma real en cada página). */
 .dialogo-pin { margin: 16px auto 0; max-width: 240px; text-align: left; }
 .dialogo-pin .etiqueta { display: block; margin-bottom: 6px; }

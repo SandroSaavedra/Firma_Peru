@@ -978,3 +978,11 @@ def test_tomar_pin_saca_el_pin_de_las_opciones():
     assert app.tomar_pin({"paginas": "cada_pagina", "pin": ""}) is None
     assert app.tomar_pin({"paginas": "cada_pagina", "pin": 1234}) is None
     assert app.tomar_pin(None) is None
+
+
+def test_info_app_devuelve_version_y_carpeta_de_registros():
+    from version import VERSION
+    from registro import carpeta_registros
+
+    r = app.Api().info_app()
+    assert r == {"ok": True, "version": VERSION, "registros": str(carpeta_registros())}

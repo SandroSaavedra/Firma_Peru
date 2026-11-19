@@ -58,7 +58,7 @@ const el = {
   dialogoPin: $("dialogo-pin"), inpPin: $("inp-pin"), txtPaginasAyuda: $("txt-paginas-ayuda"),
   tabFirmar: $("tab-firmar"), tabValidar: $("tab-validar"),
   vistaFirmar: $("vista-firmar"), vistaValidar: $("vista-validar"),
-  btnAbrir: $("btn-abrir"), btnAbrirVacio: $("btn-abrir-vacio"), btnTema: $("btn-tema"),
+  btnAbrir: $("btn-abrir"), btnAbrirVacio: $("btn-abrir-vacio"), btnTema: $("btn-tema"), btnInfo: $("btn-info"),
   miniaturas: $("lista-miniaturas"),
   scroll: $("lienzo-scroll"), vacio: $("vacio"), vacioTexto: $("vacio-texto"), hoja: $("hoja"), lienzo: $("lienzo"),
   cargador: $("cargador"), cargadorTexto: $("cargador-texto"), cargadorProgreso: $("cargador-progreso"),
@@ -205,6 +205,19 @@ async function abrirRegistro() {
 
 // Acción de los diálogos de error: abre la carpeta con firmador.log.
 const ACCION_ABRIR_REGISTRO = { texto: "Abrir registro", icono: "carpeta", accion: abrirRegistro };
+
+// «Acerca de»: versión instalada y dónde queda el registro de diagnóstico.
+async function mostrarInfo() {
+  const r = await llamar("info_app");
+  if (!r.ok) return aviso(r.mensaje || "No se pudo leer la información de la aplicación.", true);
+  mostrarDialogo({
+    tipo: "info",
+    titulo: `Firma Perú ${r.version}`,
+    texto: "Registro de diagnóstico (firmador.log):",
+    ruta: r.registros,
+    acciones: [ACCION_ABRIR_REGISTRO, { texto: "Cerrar", accion: cerrarDialogo, primario: true }],
+  });
+}
 
 function aviso(texto, error = false) {
   if (error) registrar("warning", `Aviso de error: ${texto}`);
@@ -2328,6 +2341,7 @@ function iniciar() {
 
   el.btnDnie.addEventListener("click", consultarDnie);
   el.btnAbrirRegistro.addEventListener("click", abrirRegistro);
+  el.btnInfo.addEventListener("click", mostrarInfo);
   for (const radio of document.querySelectorAll('input[name="paginas"], input[name="pagina-firma"]')) {
     radio.addEventListener("change", () => {
       if (radio.name === "paginas") {
