@@ -305,6 +305,7 @@ def test_rechazo_silencioso_reintenta_la_misma_firma_con_el_cuadro_de_windows(mo
         ("pin", 201, 0),
         ("tamaño", 201, SILENCIOSO),
         ("firma", 201, SILENCIOSO),
+        ("HWND Handle", 201, 0),  # llave reabierta limpia, con la misma ventana
         ("tamaño", 201, INTERACTIVO),
         ("firma", 201, INTERACTIVO),
         ("tamaño", 201, INTERACTIVO),
@@ -396,3 +397,20 @@ def test_un_aviso_que_falla_no_impide_firmar(monkeypatch, material_prueba):
     with sesion as firmante:
         assert firmante._firmar_resumen(b"\x00" * 32, "sha256") == b"FIRM"
     assert sesion.pin_por_firma
+
+
+def test_rechazo_silencioso_reabre_la_llave_sin_el_pin_antes_del_cuadro_de_windows(monkeypatch, material_prueba):
+    cng = _NcryptFalso(monkeypatch, respuestas=[NTE_SILENT_CONTEXT])
+    abiertas, liberadas = [], []
+    monkeypatch.setattr(dnie_cng, "_abrir_llave", lambda proveedor, llave, flags=0: abiertas.append(1) or 200 + len(abiertas))
+    monkeypatch.setattr(dnie_cng, "_FreeObject", lambda h: liberadas.append(int(h)) or 0)
+    sesion = _sesion_con_aviso(material_prueba, PIN, [])
+    with sesion as firmante:
+        firmante._firmar_resumen(b"" * 32, "sha256")
+        firmante._firmar_resumen(b"" * 32, "sha256")
+        assert 201 in liberadas  # la llave que recibió el PIN se suelta antes del reintento
+    # el reintento y las firmas siguientes usan la llave nueva (202), con su ventana asignada
+    assert [h for (_, h, f) in cng.llamadas if f == INTERACTIVO] == [202, 202, 202, 202]
+    assert ("HWND Handle", 202, 0) in cng.llamadas
+    assert ("pin", 202, 0) not in cng.llamadas
+    assert len(abiertas) == 2

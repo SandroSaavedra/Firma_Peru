@@ -868,6 +868,13 @@ class SesionFirma:
         """La tarjeta no acepta el PIN en silencio: Windows lo pedirá en cada firma."""
         self._borrar_pin()
         self._pin_por_firma = True
+        # La llave que recibió «SmartCardPin» se suelta y se abre otra limpia, con la
+        # misma ventana, para que el cuadro de Windows no herede ese estado.
+        viejo, self._handle = self._handle, None
+        if viejo is not None:
+            _FreeObject(viejo)
+        self._handle = _abrir_llave(self._proveedor, self._llave)
+        self.firmante._asignar_ventana(self._handle)
         logger.warning(
             "Sesión de firma: el DNIe exige su propio cuadro del PIN en cada firma (0x%08X); "
             "se continúa con el PIN de Windows por página.",
