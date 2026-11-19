@@ -814,3 +814,30 @@ def test_registrar_un_error_nunca_falla():
             raise RuntimeError("sin texto")
 
     assert "Raro" in app.describir_error(Raro())
+
+
+def test_registrar_evento_de_la_interfaz(caplog):
+    caplog.set_level("INFO")
+    api = app.Api()
+    assert api.registrar_evento("warning", "Botón Firmar desactivado") == {"ok": True}
+    assert api.registrar_evento("critical", "x" * 2000) == {"ok": True}  # nivel no permitido: info
+    registros = [r for r in caplog.records if r.name == "firmador.ui"]
+    assert [r.levelname for r in registros] == ["WARNING", "INFO"]
+    assert registros[0].getMessage() == "Botón Firmar desactivado"
+    assert len(registros[1].getMessage()) <= 501
+    assert api.registrar_evento(None, None) == {"ok": True}
+
+
+def test_abrir_carpeta_registros(monkeypatch, tmp_path):
+    abiertos = []
+    monkeypatch.setattr(app, "carpeta_registros", lambda: tmp_path / "registros")
+    monkeypatch.setattr(app.os, "startfile", lambda p: abiertos.append(p), raising=False)
+    assert app.Api().abrir_carpeta_registros() == {"ok": True}
+    assert abiertos == [tmp_path / "registros"] and (tmp_path / "registros").is_dir()
+
+    def _falla(p):
+        raise OSError("sin explorador")
+
+    monkeypatch.setattr(app.os, "startfile", _falla, raising=False)
+    r = app.Api().abrir_carpeta_registros()
+    assert r["ok"] is False and "registro" in r["mensaje"]

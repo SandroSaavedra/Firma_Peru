@@ -163,6 +163,20 @@ python firma1.py entrada.pdf salida.pdf --tipo vb --imagen-vb check.png
 predeterminado del tipo (aquí admite cualquier texto, no solo los de la lista); `--imagen-vb` es la imagen de arriba del visto bueno
 (sin ella, la marca de verificación propia).
 
+## Registro de diagnóstico
+
+La aplicación guarda un registro en
+`%LOCALAPPDATA%\FirmadorDNIe\registros\firmador.log` (rota al llegar a 1 MB y
+conserva las 5 copias anteriores). Anota cada paso de la firma: el documento
+abierto (nombre, páginas y firmas previas), dónde se guarda, la búsqueda de la
+llave del DNIe (titular, uso y vigencia del certificado), el momento en que
+Windows pide el PIN, el código que devuelve la tarjeta y los errores. No
+contiene el PIN (la aplicación nunca lo ve) ni el contenido de los documentos.
+
+Para abrir la carpeta, use **Abrir registro de diagnóstico** (debajo del botón
+«Firmar») o **Abrir registro** en un mensaje de error. Al reportar un problema,
+envíe el archivo `firmador.log`.
+
 ## Pruebas
 
 ```powershell

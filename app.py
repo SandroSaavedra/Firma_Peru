@@ -51,7 +51,7 @@ from firma_pdf import (
     fondo_blanco_a_transparente,
     recortar_margenes,
 )
-from registro import configurar_registro
+from registro import carpeta_registros, configurar_registro
 from validacion import validar_pdf
 
 logger = logging.getLogger("firmador")
@@ -100,6 +100,10 @@ _CODIGOS_DETENER = {
 }
 MENSAJE_OCUPADO = "Espere a que termine la firma en curso."
 MENSAJE_CANCELADO_LOTE = "Se canceló la firma por lotes. Los documentos restantes quedan pendientes."
+
+# Eventos que la interfaz envía al registro (`registrar_evento`).
+NIVELES_EVENTO = {"info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
+LARGO_EVENTO = 500
 
 
 def ruta_recursos() -> Path:
@@ -1392,6 +1396,31 @@ class Api:
         # espacios y Explorer abre «Documentos». Una ruta de Windows no puede
         # contener comillas, así que no hay inyección posible.
         subprocess.Popen(f'explorer /select,"{p}"')  # noqa: S603,S607
+        return {"ok": True}
+
+    # --- registro de diagnóstico ------------------------------------------------
+
+    def registrar_evento(self, nivel: str, mensaje: str) -> dict:
+        """Evento de la interfaz (clic, botón desactivado, diálogo de error) para firmador.log."""
+        try:
+            nivel = nivel if nivel in NIVELES_EVENTO else "info"
+            texto = str(mensaje if mensaje is not None else "")
+            if len(texto) > LARGO_EVENTO:
+                texto = texto[:LARGO_EVENTO] + "…"
+            logging.getLogger("firmador.ui").log(NIVELES_EVENTO[nivel], "%s", texto)
+        except Exception:  # noqa: BLE001 - el registro nunca debe afectar a la interfaz
+            pass
+        return {"ok": True}
+
+    def abrir_carpeta_registros(self) -> dict:
+        """Abre en el Explorador la carpeta con firmador.log."""
+        carpeta = carpeta_registros()
+        try:
+            carpeta.mkdir(parents=True, exist_ok=True)
+            os.startfile(carpeta)  # noqa: S606 - carpeta propia de la aplicación
+        except OSError as e:
+            logger.warning("No se pudo abrir la carpeta del registro %s: %s", carpeta, e)
+            return {"ok": False, "mensaje": f"No se pudo abrir la carpeta del registro ({carpeta})."}
         return {"ok": True}
 
 

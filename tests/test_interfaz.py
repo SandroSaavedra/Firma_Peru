@@ -96,3 +96,43 @@ def test_mover_el_sello_solo_cambia_la_posicion_de_la_pagina_a_la_vista():
     cuerpo = re.search(r"function confirmarCaja\(\) \{(.*?)\n\}", js, re.S).group(1)
     assert "cajasPaginas" in cuerpo and "estado.pagina" in cuerpo
     assert ".caja =" not in cuerpo  # la posición del documento no cambia
+
+
+# --- registro de diagnóstico ----------------------------------------------------
+
+
+def test_enlace_abrir_registro_existe_y_esta_conectado():
+    html, js = _html(), _js()
+    assert _boton(html, "btn-abrir-registro") == "Abrir registro de diagnóstico"
+    assert '$("btn-abrir-registro")' in js
+    assert re.search(r"el\.btnAbrirRegistro\.addEventListener\(\s*\"click\",\s*abrirRegistro", js)
+    cuerpo = re.search(r"async function abrirRegistro\(\) \{(.*?)\n\}", js, re.S).group(1)
+    assert 'llamar("abrir_carpeta_registros")' in cuerpo
+
+
+def test_los_dialogos_de_error_ofrecen_abrir_registro():
+    js = _js()
+    assert re.search(r'const ACCION_ABRIR_REGISTRO = \{ texto: "Abrir registro", icono: "\w+", accion: abrirRegistro \}', js)
+    uno = re.search(r"async function firmar\(\) \{(.*?)\n\}", js, re.S).group(1)
+    lote = re.search(r"async function firmarLote\(\) \{(.*?)\n\}", js, re.S).group(1)
+    resumen = re.search(r"function mostrarResumenLote\(r\) \{(.*?)\n\}", js, re.S).group(1)
+    for cuerpo in (uno, lote, resumen):
+        assert "ACCION_ABRIR_REGISTRO" in cuerpo
+
+
+def test_la_interfaz_envia_eventos_al_registro_sin_romperse():
+    js = _js()
+    cuerpo = re.search(r"function registrar\(nivel, mensaje\) \{(.*?)\n\}", js, re.S).group(1)
+    assert "registrar_evento" in cuerpo and "try" in cuerpo and "catch" in cuerpo
+    # Clic en Firmar con el modo del plan.
+    uno = re.search(r"async function firmar\(\) \{(.*?)\n\}", js, re.S).group(1)
+    assert re.search(r'registrar\("info", `Clic en Firmar', uno)
+    # Botón desactivado: solo cuando cambia el motivo.
+    boton = re.search(r"function actualizarBotonFirmar\(\) \{(.*?)\n\}", js, re.S).group(1)
+    assert "motivoBotonDesactivado(plan)" in boton and "ultimoMotivoBloqueo" in boton
+    motivos = re.search(r"function motivoBotonDesactivado\(plan\) \{(.*?)\n\}", js, re.S).group(1)
+    for texto in ("estado.firmando", "!estado.info", "docmdp === 1", "actualYaFirmado()"):
+        assert texto in motivos
+    # Cada diálogo de error queda registrado con su mensaje.
+    dialogo = re.search(r"function mostrarDialogo\(.*?\) \{(.*?)\n\}", js, re.S).group(1)
+    assert re.search(r'tipo === "error"\) registrar\("error"', dialogo)

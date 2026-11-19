@@ -74,7 +74,7 @@ const el = {
   campoImagenVb: $("campo-imagen-vb"),
   selMotivo: $("sel-motivo"), txtLugar: $("txt-lugar"),
   chkGuardarComo: $("chk-guardar-como"), txtDestino: $("txt-destino"),
-  btnFirmar: $("btn-firmar"),
+  btnFirmar: $("btn-firmar"), btnAbrirRegistro: $("btn-abrir-registro"),
   btnValidarAbierto: $("btn-validar-abierto"), btnValidarOtro: $("btn-validar-otro"),
   resultados: $("resultados"), validarSub: $("validar-sub"),
   dialogoFondo: $("dialogo"), dialogo: document.querySelector(".dialogo"), dialogoTitulo: $("dialogo-titulo"),
@@ -181,7 +181,28 @@ async function llamar(metodo, ...args) {
   }
 }
 
+// Envía un evento al registro de diagnóstico (firmador.log). Sin esperar la
+// respuesta y sin lanzar nunca: el registro no debe afectar a la interfaz.
+function registrar(nivel, mensaje) {
+  try {
+    const api = window.pywebview && window.pywebview.api;
+    if (!api || typeof api.registrar_evento !== "function") return;
+    Promise.resolve(api.registrar_evento(nivel, String(mensaje))).catch(() => {});
+  } catch {
+    /* el registro es solo diagnóstico */
+  }
+}
+
+async function abrirRegistro() {
+  const r = await llamar("abrir_carpeta_registros");
+  if (!r.ok) aviso(r.mensaje || "No se pudo abrir la carpeta del registro.", true);
+}
+
+// Acción de los diálogos de error: abre la carpeta con firmador.log.
+const ACCION_ABRIR_REGISTRO = { texto: "Abrir registro", icono: "carpeta", accion: abrirRegistro };
+
 function aviso(texto, error = false) {
+  if (error) registrar("warning", `Aviso de error: ${texto}`);
   const nodo = h("div", { class: `aviso${error ? " error" : ""}` }, icono(error ? "alerta" : "info"), texto);
   el.avisos.append(nodo);
   setTimeout(() => nodo.remove(), error ? 6000 : 3500);
@@ -1422,8 +1443,27 @@ function actualizarDestino() {
   }
 }
 
+// Por qué el botón «Firmar» está desactivado (null si está activo).
+function motivoBotonDesactivado(plan) {
+  if (estado.firmando) return "firma en curso";
+  if (plan) return null;
+  if (!estado.info) return "sin documento abierto";
+  if (estado.info.docmdp === 1) return "documento certificado (DocMDP 1)";
+  if (actualYaFirmado()) return "documento ya firmado en esta sesión";
+  return "sin documentos pendientes";
+}
+
+let ultimoMotivoBloqueo; // undefined: aún no se registró nada
+
 function actualizarBotonFirmar() {
   const plan = planFirma();
+  const motivo = motivoBotonDesactivado(plan);
+  if (motivo !== ultimoMotivoBloqueo) {
+    // Solo cuando cambia el motivo, no en cada actualización.
+    if (motivo) registrar("info", `Botón Firmar desactivado: ${motivo}.`);
+    else if (ultimoMotivoBloqueo) registrar("info", `Botón Firmar activo (modo ${plan.modo}).`);
+    ultimoMotivoBloqueo = motivo;
+  }
   el.btnFirmarTexto.textContent = estado.firmando
     ? "Firmando…"
     : plan && plan.modo === "lote"
@@ -1450,6 +1490,7 @@ function ponerProgreso(fraccion) {
 }
 
 function mostrarDialogo({ tipo, titulo, texto, ruta = null, acciones = [], progreso = null, nota = null, lista = [] }) {
+  if (tipo === "error") registrar("error", `Diálogo de error «${titulo}»: ${texto}`);
   if (el.dialogoFondo.hidden) estado.focoPrevio = document.activeElement;
   el.dialogo.dataset.tipo = tipo;
   el.dialogoTitulo.textContent = titulo;
@@ -1510,6 +1551,7 @@ function opcionesComunes() {
 async function firmar() {
   if (estado.firmando || el.btnFirmar.disabled) return;
   const plan = planFirma();
+  registrar("info", `Clic en Firmar: plan ${plan ? `${plan.modo}${plan.n ? ` (${plan.n} documentos)` : ""}` : "ninguno"}.`);
   if (!plan) return;
   if (plan.modo === "lote") {
     await firmarLote();
@@ -1517,8 +1559,10 @@ async function firmar() {
   }
   let destino = null;
   if (el.chkGuardarComo.checked || !estado.info.ruta) {
+    registrar("info", `Firmar: se pide dónde guardar (${estado.info.ruta ? "«Elegir dónde guardar» marcado" : "PDF sin ruta de origen"}).`);
     const r = await llamar("elegir_destino", estado.tipo);
     if (!r.ok) {
+      registrar("info", `Firmar: «Guardar como» ${r.cancelado ? "cancelado" : `falló: ${r.mensaje}`}.`);
       if (!r.cancelado) aviso(r.mensaje, true);
       return;
     }
@@ -1576,6 +1620,7 @@ async function firmar() {
       texto: r.mensaje || "Error desconocido.",
       acciones: [
         { texto: "Reintentar", primario: true, accion: () => { cerrarDialogo(); firmar(); } },
+        ACCION_ABRIR_REGISTRO,
         { texto: "Cerrar", accion: cerrarDialogo },
       ],
     });
@@ -1614,7 +1659,7 @@ async function firmarLote() {
       tipo: "error",
       titulo: "No se pudo firmar",
       texto: r.mensaje || "Error desconocido.",
-      acciones: [{ texto: "Cerrar", accion: cerrarDialogo }],
+      acciones: [ACCION_ABRIR_REGISTRO, { texto: "Cerrar", accion: cerrarDialogo }],
     });
     return;
   }
@@ -1705,8 +1750,9 @@ function mostrarResumenLote(r) {
     acciones.push({ texto: "Continuar con los pendientes", icono: "pluma", primario: !n, accion: () => { cerrarDialogo(); firmar(); } });
   }
   acciones.push({ texto: "Firmar más documentos", icono: "mas", accion: firmarMas });
-  acciones.push({ texto: "Cerrar", accion: cerrarDialogo });
   const conProblemas = r.detenido === "tarjeta" || r.detenido === "pin_cancelado" || n === 0;
+  if (conProblemas || m) acciones.push(ACCION_ABRIR_REGISTRO);
+  acciones.push({ texto: "Cerrar", accion: cerrarDialogo });
   mostrarDialogo({
     // Con errores parciales se usa el ícono de advertencia, no el check de éxito.
     tipo: conProblemas ? "error" : m || r.detenido ? "pregunta" : "ok",
@@ -2142,6 +2188,7 @@ function iniciar() {
   }).observe(el.scroll);
 
   el.btnDnie.addEventListener("click", consultarDnie);
+  el.btnAbrirRegistro.addEventListener("click", abrirRegistro);
   for (const radio of document.querySelectorAll('input[name="paginas"], input[name="pagina-firma"]')) {
     radio.addEventListener("change", () => {
       if (radio.name === "paginas") guardarPreferencia("paginas", radio.value);

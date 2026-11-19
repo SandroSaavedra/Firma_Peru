@@ -150,6 +150,9 @@ kbd { font: 600 11px var(--fuente); background: var(--superficie); border: 1px s
 .btn-icono:disabled { opacity: .4; }
 .enlace { background: none; border: 0; padding: 0; color: var(--acento); font-weight: 600; font-size: inherit; }
 .enlace:hover { text-decoration: underline; }
+/* Discreto: solo se usa al reportar un problema. */
+.enlace-registro { margin-top: 8px; font-size: 12px; font-weight: 500; color: var(--texto-3); }
+.enlace-registro:hover { color: var(--acento); }
 
 .chip {
   display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
