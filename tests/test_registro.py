@@ -196,6 +196,9 @@ def _enumeracion_falsa(monkeypatch, estado_enum):
     monkeypatch.setattr(dnie_cng, "_EnumKeys", lambda *a: estado_enum)
     monkeypatch.setattr(dnie_cng, "_FreeObject", lambda h: liberados.append(int(h.value)) or 0)
     monkeypatch.setattr(dnie_cng, "_FreeBuffer", lambda b: 0)
+    # Sin lectores ni certificados en el almacén: las búsquedas alternativas no tocan la tarjeta real.
+    monkeypatch.setattr(dnie_cng, "_recolectar_hechos", lambda: {"error_lectores": None, "lectores": []})
+    monkeypatch.setattr(dnie_cng, "_certificados_de_tarjeta_en_almacen", lambda: [])
     return liberados
 
 
