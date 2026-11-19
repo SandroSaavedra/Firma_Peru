@@ -3,7 +3,15 @@ Acceso al DNIe a través de Windows CNG (Microsoft Smart Card Key Storage
 Provider + minidriver instalado por RENIEC).
 
 No usa PKCS#11: Windows maneja la tarjeta y muestra su propio cuadro de
-diálogo para pedir el PIN al momento de firmar. Este módulo nunca ve el PIN.
+diálogo para pedir el PIN al momento de firmar.
+
+Excepción: una `SesionFirma` creada con `pin=` (firma real en cada página, un
+solo PIN para muchas firmas) entrega el PIN a la llave con NCryptSetProperty
+("SmartCardPin", comportamiento documentado del Microsoft Smart Card KSP)
+antes de cada NCryptSignHash y firma con NCRYPT_SILENT_FLAG, sin el cuadro de
+Windows. El PIN vive solo en un búfer de ctypes que se borra al cerrar la
+sesión o en cuanto el PIN falla; nunca se registra, ni va en un error, ni se
+devuelve. Un PIN incorrecto o bloqueado detiene la sesión: no se reintenta.
 """
 import ctypes
 import hashlib
@@ -30,10 +38,18 @@ _crypt32 = ctypes.WinDLL("crypt32.dll")
 PROVEEDOR_TARJETA = "Microsoft Smart Card Key Storage Provider"
 _PROP_CERTIFICADO = "SmartCardKeyCertificate"
 _PROP_VENTANA = "HWND Handle"  # NCRYPT_WINDOW_HANDLE_PROPERTY
+_PROP_PIN = "SmartCardPin"  # NCRYPT_PIN_PROPERTY
 _NCRYPT_SILENT_FLAG = 0x40
 _BCRYPT_PAD_PKCS1 = 0x2
 _NTE_NO_MORE_ITEMS = 0x8009002A
 _NTE_NOT_FOUND = 0x80090011
+
+# PIN incorrecto o bloqueado: otro intento con el mismo PIN podría bloquear el DNIe.
+CODIGOS_PIN = {
+    0x8010006B,  # SCARD_W_WRONG_CHV
+    0x8010006C,  # SCARD_W_CHV_BLOCKED
+    0x80090033,  # NTE_INCORRECT_PASSWORD
+}
 
 _HASH_CNG = {"sha1": "SHA1", "sha256": "SHA256", "sha384": "SHA384", "sha512": "SHA512"}
 
@@ -429,13 +445,18 @@ class FirmanteCNG(signers.Signer):
         finally:
             _FreeObject(proveedor)
 
-    def _firmar_con_handle(self, llave, resumen: bytes, digest_algorithm: str) -> bytes:
-        """NCryptSignHash sobre una llave ya abierta."""
+    def _firmar_con_handle(self, llave, resumen: bytes, digest_algorithm: str, silencioso: bool = False) -> bytes:
+        """
+        NCryptSignHash sobre una llave ya abierta. `silencioso`: el PIN ya se
+        asignó a la llave y se firma con NCRYPT_SILENT_FLAG (sin cuadro de Windows).
+        """
         if self._algoritmo == "rsa":
             relleno = _Pkcs1PaddingInfo(_HASH_CNG[digest_algorithm])
             p_relleno, flags = ctypes.byref(relleno), _BCRYPT_PAD_PKCS1
         else:
             p_relleno, flags = None, 0
+        if silencioso:
+            flags |= _NCRYPT_SILENT_FLAG
         hash_buf = (ctypes.c_ubyte * len(resumen)).from_buffer_copy(resumen)
         tam = wintypes.DWORD()
         _verificar(
@@ -444,7 +465,8 @@ class FirmanteCNG(signers.Signer):
         )
         salida = (ctypes.c_ubyte * tam.value)()
         logger.info(
-            "NCryptSignHash: solicitando firma / PIN a Windows (resumen %s de %d bytes, ventana asociada: %s).",
+            "NCryptSignHash: solicitando firma %s (resumen %s de %d bytes, ventana asociada: %s).",
+            "en silencio con el PIN provisto por la aplicación" if silencioso else "/ PIN a Windows",
             digest_algorithm,
             len(resumen),
             "sí" if self._hwnd else "no",
@@ -495,10 +517,18 @@ class SesionFirma:
     Al reutilizar el mismo handle de la llave, el minidriver de la tarjeta puede
     aprovechar su caché del PIN y Windows pedirlo una sola vez. Eso depende de la
     política de la tarjeta: si exige el PIN en cada firma, Windows lo pedirá en
-    cada una. Este código nunca lee, guarda ni asigna el PIN.
+    cada una.
+
+    Sin `pin` este código nunca lee, guarda ni asigna el PIN. Con `pin` (texto
+    que la aplicación pidió UNA vez) se copia de inmediato a un búfer de ctypes
+    (UTF-16LE con su terminador), se asigna a la llave antes de cada firma y se
+    firma en silencio. El búfer se llena de ceros al cerrar la sesión, si no se
+    puede abrir la llave o en cuanto el PIN falla. Un PIN incorrecto o
+    bloqueado (CODIGOS_PIN) detiene la sesión: las firmas siguientes fallan sin
+    tocar la tarjeta, para no gastar otro intento. NCryptSignHash nunca se reintenta.
     """
 
-    def __init__(self, llave: LlaveTarjeta, hwnd: int | None = None):
+    def __init__(self, llave: LlaveTarjeta, hwnd: int | None = None, pin: str | None = None):
         self._llave = llave
         self._hwnd = hwnd
         self._proveedor = None
@@ -506,26 +536,51 @@ class SesionFirma:
         self.firmante: _FirmanteDeSesion | None = None
         self.firmas = 0  # firmas completadas en la sesión
         self.fallidas = 0  # intentos de firma que terminaron en error
+        # Búfer mutable con el PIN (se borra con `_borrar_pin`); None = Windows pide el PIN.
+        self._pin = ctypes.create_unicode_buffer(pin) if pin else None
+        self.pin_provisto = self._pin is not None
+        self._error_pin: int | None = None  # código del PIN rechazado: la sesión queda detenida
 
     def __enter__(self) -> FirmanteCNG:
-        # El firmante (cadena de certificados) se arma antes de abrir los handles.
-        self.firmante = _FirmanteDeSesion(self._llave, self._hwnd, self)
-        proveedor = _abrir_proveedor()
         try:
-            handle = _abrir_llave(proveedor, self._llave)
+            # El firmante (cadena de certificados) se arma antes de abrir los handles.
+            self.firmante = _FirmanteDeSesion(self._llave, self._hwnd, self)
+            proveedor = _abrir_proveedor()
+            try:
+                handle = _abrir_llave(proveedor, self._llave)
+            except BaseException:
+                _FreeObject(proveedor)
+                raise
         except BaseException:
-            _FreeObject(proveedor)
+            self._borrar_pin()
             raise
         self._proveedor, self._handle = proveedor, handle
         self.firmante._asignar_ventana(handle)  # una sola vez para toda la sesión
-        logger.info("Sesión de firma abierta: proveedor y llave abiertos 1 vez.")
+        logger.info(
+            "Sesión de firma abierta: proveedor y llave abiertos 1 vez (PIN provisto: %s).",
+            "sí" if self.pin_provisto else "no",
+        )
         return self.firmante
 
     def __exit__(self, *excepcion):
         self.cerrar()
         return False
 
+    def _borrar_pin(self):
+        """Llena de ceros el búfer del PIN y lo suelta."""
+        pin, self._pin = self._pin, None
+        if pin is not None:
+            ctypes.memset(ctypes.addressof(pin), 0, ctypes.sizeof(pin))
+
+    def _asignar_pin(self):
+        """NCryptSetProperty(SmartCardPin) con el PIN del búfer (UTF-16LE con terminador)."""
+        _verificar(
+            _SetProperty(self._handle, _PROP_PIN, ctypes.byref(self._pin), ctypes.sizeof(self._pin), 0),
+            "NCryptSetProperty (PIN)",
+        )
+
     def cerrar(self):
+        self._borrar_pin()
         handle, proveedor = self._handle, self._proveedor
         self._handle = self._proveedor = None
         if handle is not None:
@@ -542,10 +597,24 @@ class SesionFirma:
     def _firmar(self, firmante: FirmanteCNG, resumen: bytes, digest_algorithm: str) -> bytes:
         if self._handle is None:
             raise ErrorCNG("La sesión de firma está cerrada.")
+        if self._error_pin is not None:
+            raise ErrorCNG(
+                f"La sesión de firma se detuvo porque el DNIe rechazó el PIN (0x{self._error_pin:08X}).",
+                codigo=self._error_pin,
+            )
         try:
-            firma = firmante._firmar_con_handle(self._handle, resumen, digest_algorithm)
-        except ErrorCNG:
+            if self._pin is not None:
+                self._asignar_pin()
+                firma = firmante._firmar_con_handle(self._handle, resumen, digest_algorithm, True)
+            else:
+                firma = firmante._firmar_con_handle(self._handle, resumen, digest_algorithm)
+        except ErrorCNG as e:
             self.fallidas += 1
+            if self.pin_provisto and e.codigo in CODIGOS_PIN:
+                # Ni otro intento ni otra firma con este PIN: podría bloquear el DNIe.
+                self._error_pin = e.codigo
+                self._borrar_pin()
+                logger.warning("Sesión de firma detenida: el DNIe rechazó el PIN provisto (0x%08X).", e.codigo)
             raise
         self.firmas += 1
         logger.info("Sesión de firma: firma n.º %d completada con la misma llave abierta.", self.firmas)

@@ -56,7 +56,16 @@ It saves hours of repetitive work and many PIN entries, while meeting the per-pa
     - All 569 signatures were produced; the first and the last were checked as intact and valid.
     - With the real DNIe, each signature also costs the card's RSA operation (roughly 0.3–1 s), so a ~570-page document can take about 10–15 minutes.
     - Main hotspot (not changed): each page reopens the reader, which re-parses every xref section. The original has 20 sections of ~63k entries, which costs ~0.25 s/page and was about 60% of the time in a profile. On top of that, pyHanko enumerates every existing signature field twice per page, so the per-page time grows linearly with the number of signatures. Fixing either would mean patching pyHanko internals (`XRefBuilder`/`PdfFileReader`), which this task does not do.
-- [ ] T2 — PIN once in `dnie_cng.py`: an optional PIN supplied via `NCryptSetProperty(NCRYPT_PIN_PROPERTY)` plus silent signing, kept in memory only and wiped after use. A wrong PIN stops at once. Unit tests use fakes.
+- [x] T2 — PIN once in `dnie_cng.py`: an optional PIN supplied via `NCryptSetProperty(NCRYPT_PIN_PROPERTY)` plus silent signing, kept in memory only and wiped after use. A wrong PIN stops at once. Unit tests use fakes.
+  - RED: 10 new tests in `tests/test_dnie_cng.py` failed (`SesionFirma.__init__() got an unexpected keyword argument 'pin'`).
+  - GREEN: `tests/test_dnie_cng.py` → 15 passed; full suite → 271 passed; `node --check ui/app.js` OK.
+  - Implementation: `SesionFirma(llave, hwnd, pin=None)`.
+    - The PIN is copied right away into a `ctypes.create_unicode_buffer`, which is UTF-16LE with its terminator.
+    - Before every `NCryptSignHash` the session calls `NCryptSetProperty(hKey, "SmartCardPin", buffer, sizeof, 0)`, and the signature uses `NCRYPT_SILENT_FLAG`.
+    - The buffer is zeroed (`ctypes.memset`) when the session closes, when opening the key fails, and as soon as the PIN is rejected.
+    - The codes `CODIGOS_PIN` (0x8010006B, 0x8010006C, NTE_INCORRECT_PASSWORD 0x80090033) stop the session. Every later signature fails without touching the card, and `NCryptSignHash` is never retried.
+    - Without a PIN, the flags and calls are exactly as before.
+    - Logs say only «PIN provisto: sí/no».
 - [ ] T3 — App + UI: the mode selector, a PIN dialog (password field), progress with Cancel, batch support, and a README section. API and static UI tests.
 
 ## Route
@@ -74,4 +83,5 @@ Delegated direct, one writer. Trigger: 2+ non-trivial files (`firma_pdf.py`, `dn
 ## Progress
 
 - 2026-11-19: document created; T1–T3 delegated to one writer.
-- 2026-11-19: T1 done (core loop + certified-document policy + benchmark).
+- 2026-11-19: T1 done (core loop + certified-document policy + benchmark) — commit `bd966ea`.
+- 2026-11-19: T2 done (PIN supplied once through CNG, silent signing, wiped buffer).
