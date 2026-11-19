@@ -82,12 +82,14 @@ IMAGENES = {
 _MENSAJES_CNG = {
     0x8010006E: "Se canceló el ingreso del PIN. El documento no se firmó.",
     0x800704C7: "Se canceló la operación. El documento no se firmó.",
+    0x80090036: "Se canceló el ingreso del PIN. El documento no se firmó.",  # NTE_USER_CANCELLED
     0x8010006B: "El PIN es incorrecto. Después de varios intentos fallidos el DNIe se bloquea.",
     0x8010006C: "El PIN del DNIe está bloqueado. Debe desbloquearse en RENIEC.",
     # NTE_INCORRECT_PASSWORD: lo mismo que SCARD_W_WRONG_CHV, según el minidriver.
     0x80090033: "El PIN es incorrecto. Después de varios intentos fallidos el DNIe se bloquea.",
-    # NTE_SILENT_CONTEXT: con el PIN provisto, la tarjeta quiso mostrar el cuadro de Windows.
-    0x80090022: "El DNIe no aceptó el PIN sin su propio cuadro de diálogo. Firme con otra opción de páginas.",
+    # NTE_SILENT_CONTEXT: la sesión ya pasa al PIN de Windows por página; solo llega aquí si
+    # ni siquiera así se pudo firmar.
+    0x80090022: "El DNIe no permitió firmar. Vuelva a intentarlo; si continúa, envíe el registro de diagnóstico.",
     0x8010000C: "No se detecta el DNIe en el lector. Insértelo e intente de nuevo.",
     0x80100069: "Se retiró el DNIe del lector durante la operación.",
     0x8010002E: "No hay lectores de tarjetas conectados.",
@@ -95,14 +97,18 @@ _MENSAJES_CNG = {
     0x80090016: "No se encontró la llave de firma en el DNIe.",
 }
 # En un lote: el usuario canceló el cuadro del PIN -> se detiene y lo que falta queda pendiente.
-_CODIGOS_CANCELADO = {0x8010006E, 0x800704C7}  # SCARD_W_CANCELLED_BY_USER, ERROR_CANCELLED
+_CODIGOS_CANCELADO = {
+    0x8010006E,  # SCARD_W_CANCELLED_BY_USER
+    0x800704C7,  # ERROR_CANCELLED
+    0x80090036,  # NTE_USER_CANCELLED
+}
 # En un lote: PIN incorrecto o bloqueado (repetir intentos bloquearía el DNIe) o la tarjeta
 # dejó de estar disponible (fallaría igual en todos los documentos siguientes) -> se detiene.
 _CODIGOS_DETENER = {
     0x8010006B,  # SCARD_W_WRONG_CHV
     0x8010006C,  # SCARD_W_CHV_BLOCKED
     0x80090033,  # NTE_INCORRECT_PASSWORD
-    0x80090022,  # NTE_SILENT_CONTEXT (PIN provisto que la tarjeta no aceptó en silencio)
+    0x80090022,  # NTE_SILENT_CONTEXT (ni con el PIN de Windows por página se pudo firmar)
     0x8010000C,  # SCARD_E_NO_SMARTCARD
     0x80100069,  # SCARD_W_REMOVED_CARD
     0x8010002E,  # SCARD_E_NO_READERS_AVAILABLE
@@ -1148,7 +1154,7 @@ class Api:
             antes = time.monotonic()
             if opts.paginas == "cada_pagina":
                 # Una firma por página con la llave abierta UNA vez; con PIN, sin cuadros de Windows.
-                sesion = SesionFirma(llave, hwnd, pin=pin)
+                sesion = SesionFirma(llave, hwnd, pin=pin, al_pedir_pin_por_firma=self._avisar_pin_por_pagina)
                 logger.info(
                     "Firma: firma real en cada página de %s (PIN provisto: %s; %s; ventana asociada: %s).",
                     self._pdf["nombre"], "sí" if pin else "no",
@@ -1177,6 +1183,13 @@ class Api:
                 self._marcar(item, "pendiente")
             return {"ok": False, "cancelado": True, "mensaje": MENSAJE_CANCELADO}
         except (ErrorCNG, ErrorFirma, OSError, KeyError, ValueError) as e:
+            if accion_tras_error(e) == "cancelado":
+                logger.info(
+                    "Firma: el usuario canceló el cuadro del PIN tras %d ms (%s); no se escribió ningún archivo.",
+                    _ms(inicio), describir_error(e),
+                )
+                self._marcar_tras_error(item, e)
+                return {"ok": False, "cancelado": True, "mensaje": mensaje_de_error(e)}
             logger.warning("Firma fallida tras %d ms: %s", _ms(inicio), describir_error(e))
             self._marcar_tras_error(item, e)
             return {"ok": False, "mensaje": mensaje_de_error(e)}
@@ -1304,6 +1317,14 @@ class Api:
         except Exception:  # noqa: BLE001 - el avance es informativo
             logger.debug("No se pudo enviar el avance del lote", exc_info=True)
 
+    def _avisar_pin_por_pagina(self):
+        """
+        La sesión CNG pasó al PIN de Windows en cada firma (el DNIe no acepta el
+        PIN en silencio): la interfaz lo indica en el diálogo de avance.
+        """
+        logger.info("Firma: se avisa a la interfaz que Windows pedirá el PIN en cada página.")
+        self._emitir_progreso({"evento": "pin_por_pagina"})
+
     def _avance_paginas(self, base: dict | None = None):
         """
         `progreso(hechas, total)` para `firmar_pdf` con «cada_pagina»: envía el
@@ -1367,7 +1388,7 @@ class Api:
             llave = elegir_llave_de_firma()
             logger.info("Lote: llave elegida en %d ms (%s).", _ms(inicio_lote), describir_llave(llave))
             hwnd = self._hwnd()
-            sesion = SesionFirma(llave, hwnd, pin=pin)
+            sesion = SesionFirma(llave, hwnd, pin=pin, al_pedir_pin_por_firma=self._avisar_pin_por_pagina)
             pin = None  # la sesión lo guarda en su búfer y lo borra al cerrar
             logger.info(
                 "Lote: se abre la sesión CNG; %s (PIN provisto: %s; ventana asociada: %s).",

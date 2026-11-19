@@ -128,14 +128,17 @@ class _NcryptFalso:
     """
     Simula NCryptSetProperty y NCryptSignHash (con el `_firmar_con_handle` real)
     y registra el orden de las llamadas. `fallo_firma` / `fallo_pin`: código que
-    devuelve NCryptSignHash o la asignación del PIN.
+    devuelve NCryptSignHash o la asignación del PIN. `respuestas`: códigos que
+    devuelven, en orden, los primeros NCryptSignHash (después, `fallo_firma`).
     """
 
-    def __init__(self, monkeypatch, fallo_firma=0, fallo_pin=0):
+    def __init__(self, monkeypatch, fallo_firma=0, fallo_pin=0, respuestas=()):
         self.llamadas = []
         self.pines = []  # bytes que recibió NCryptSetProperty("SmartCardPin")
+        self.resumenes = []  # resumen que recibió cada NCryptSignHash (la firma, no el tamaño)
         self.fallo_firma = fallo_firma
         self.fallo_pin = fallo_pin
+        self.respuestas = list(respuestas)
         monkeypatch.setattr(dnie_cng, "_abrir_proveedor", lambda: 101)
         monkeypatch.setattr(dnie_cng, "_abrir_llave", lambda proveedor, llave, flags=0: 201)
         monkeypatch.setattr(dnie_cng, "_FreeObject", lambda h: 0)
@@ -157,8 +160,10 @@ class _NcryptFalso:
             self.llamadas.append(("tamaño", int(handle), flags))
             return 0
         self.llamadas.append(("firma", int(handle), flags))
-        if self.fallo_firma:
-            return self.fallo_firma
+        self.resumenes.append(bytes(resumen))
+        codigo = self.respuestas.pop(0) if self.respuestas else self.fallo_firma
+        if codigo:
+            return codigo
         ctypes.memmove(salida, b"FIRM", 4)
         return 0
 
@@ -261,3 +266,133 @@ def test_la_sesion_no_guarda_el_pin_como_texto(monkeypatch, material_prueba):
     sesion = _sesion(material_prueba, PIN)
     assert all(valor != PIN for valor in vars(sesion).values())
     assert PIN not in repr(vars(sesion))
+
+
+# --- DNIe que no acepta el PIN en silencio (DNIe 3.0): el cuadro de Windows en cada firma
+
+NTE_SILENT_CONTEXT = 0x80090022
+SILENCIOSO = dnie_cng._BCRYPT_PAD_PKCS1 | dnie_cng._NCRYPT_SILENT_FLAG
+INTERACTIVO = dnie_cng._BCRYPT_PAD_PKCS1
+
+
+def _sesion_con_aviso(material_prueba, pin, avisos):
+    return dnie_cng.SesionFirma(
+        dnie_cng.LlaveTarjeta("llave", 0, material_prueba[1]),
+        hwnd=0x1234,
+        pin=pin,
+        al_pedir_pin_por_firma=lambda: avisos.append(True),
+    )
+
+
+def test_rechazo_silencioso_reintenta_la_misma_firma_con_el_cuadro_de_windows(monkeypatch, material_prueba, caplog):
+    caplog.set_level(logging.DEBUG)
+    cng = _NcryptFalso(monkeypatch, respuestas=[NTE_SILENT_CONTEXT])
+    avisos = []
+    sesion = _sesion_con_aviso(material_prueba, PIN, avisos)
+    buffer = sesion._pin
+    with sesion as firmante:
+        assert not sesion.pin_por_firma
+        assert firmante._firmar_resumen(b"\x01" * 32, "sha256") == b"FIRM"
+        # la sesión pasa a pedir el PIN a Windows y borra el PIN de inmediato
+        assert sesion.pin_por_firma
+        assert sesion._pin is None
+        assert ctypes.string_at(ctypes.addressof(buffer), ctypes.sizeof(buffer)) == bytes(ctypes.sizeof(buffer))
+        # las firmas siguientes ya son con el cuadro de Windows, sin «SmartCardPin»
+        assert firmante._firmar_resumen(b"\x02" * 32, "sha256") == b"FIRM"
+
+    assert cng.llamadas == [
+        ("HWND Handle", 201, 0),
+        ("pin", 201, 0),
+        ("tamaño", 201, SILENCIOSO),
+        ("firma", 201, SILENCIOSO),
+        ("tamaño", 201, INTERACTIVO),
+        ("firma", 201, INTERACTIVO),
+        ("tamaño", 201, INTERACTIVO),
+        ("firma", 201, INTERACTIVO),
+    ]
+    # el reintento firma el mismo resumen: la tarjeta no llegó a tocarse
+    assert cng.resumenes == [b"\x01" * 32, b"\x01" * 32, b"\x02" * 32]
+    assert avisos == [True]  # se avisa una sola vez
+    assert (sesion.firmas, sesion.fallidas) == (2, 0)
+    assert "el DNIe exige su propio cuadro del PIN en cada firma" in caplog.text
+    assert PIN not in caplog.text
+
+
+def test_pin_por_firma_es_de_solo_lectura(monkeypatch, material_prueba):
+    _NcryptFalso(monkeypatch)
+    sesion = _sesion(material_prueba, PIN)
+    with pytest.raises(AttributeError):
+        sesion.pin_por_firma = True
+
+
+def test_sin_rechazo_silencioso_todo_sigue_igual(monkeypatch, material_prueba):
+    cng = _NcryptFalso(monkeypatch)
+    avisos = []
+    sesion = _sesion_con_aviso(material_prueba, PIN, avisos)
+    with sesion as firmante:
+        for _ in range(3):
+            firmante._firmar_resumen(b"\x00" * 32, "sha256")
+    assert not sesion.pin_por_firma and avisos == []
+    assert [c for c in cng.llamadas if c[0] == "firma"] == [("firma", 201, SILENCIOSO)] * 3
+    assert [c[0] for c in cng.llamadas].count("pin") == 3
+
+
+def test_cancelar_el_cuadro_de_windows_tras_el_rechazo_silencioso(monkeypatch, material_prueba):
+    cng = _NcryptFalso(monkeypatch, respuestas=[NTE_SILENT_CONTEXT, 0x8010006E])  # SCARD_W_CANCELLED_BY_USER
+    sesion = _sesion_con_aviso(material_prueba, PIN, [])
+    with sesion as firmante:
+        with pytest.raises(dnie_cng.ErrorCNG) as error:
+            firmante._firmar_resumen(b"\x00" * 32, "sha256")
+    assert error.value.codigo == 0x8010006E
+    assert [c for c in cng.llamadas if c[0] == "firma"] == [("firma", 201, SILENCIOSO), ("firma", 201, INTERACTIVO)]
+    assert sesion._pin is None
+
+
+@pytest.mark.parametrize("codigo", [0x8010006B, 0x8010006C, 0x80090033])
+def test_pin_incorrecto_en_el_cuadro_de_windows_detiene_la_sesion(monkeypatch, material_prueba, codigo):
+    cng = _NcryptFalso(monkeypatch, respuestas=[NTE_SILENT_CONTEXT, codigo])
+    sesion = _sesion_con_aviso(material_prueba, PIN, [])
+    with sesion as firmante:
+        with pytest.raises(dnie_cng.ErrorCNG) as error:
+            firmante._firmar_resumen(b"\x00" * 32, "sha256")
+        assert error.value.codigo == codigo
+        # detenida: la firma siguiente no toca la tarjeta
+        with pytest.raises(dnie_cng.ErrorCNG) as otra:
+            firmante._firmar_resumen(b"\x00" * 32, "sha256")
+        assert otra.value.codigo == codigo
+    assert [c[0] for c in cng.llamadas].count("firma") == 2
+    assert sesion.fallidas == 1
+
+
+def test_un_segundo_rechazo_silencioso_no_se_reintenta(monkeypatch, material_prueba):
+    cng = _NcryptFalso(monkeypatch, respuestas=[NTE_SILENT_CONTEXT, NTE_SILENT_CONTEXT])
+    with _sesion_con_aviso(material_prueba, PIN, []) as firmante:
+        with pytest.raises(dnie_cng.ErrorCNG) as error:
+            firmante._firmar_resumen(b"\x00" * 32, "sha256")
+    assert error.value.codigo == NTE_SILENT_CONTEXT
+    assert [c[0] for c in cng.llamadas].count("firma") == 2
+
+
+def test_sin_pin_un_rechazo_silencioso_no_se_reintenta(monkeypatch, material_prueba):
+    cng = _NcryptFalso(monkeypatch, respuestas=[NTE_SILENT_CONTEXT])
+    avisos = []
+    sesion = _sesion_con_aviso(material_prueba, None, avisos)
+    with sesion as firmante:
+        with pytest.raises(dnie_cng.ErrorCNG):
+            firmante._firmar_resumen(b"\x00" * 32, "sha256")
+    assert [c[0] for c in cng.llamadas].count("firma") == 1
+    assert not sesion.pin_por_firma and avisos == []
+
+
+def test_un_aviso_que_falla_no_impide_firmar(monkeypatch, material_prueba):
+    _NcryptFalso(monkeypatch, respuestas=[NTE_SILENT_CONTEXT])
+
+    def _aviso_roto():
+        raise RuntimeError("sin interfaz")
+
+    sesion = dnie_cng.SesionFirma(
+        dnie_cng.LlaveTarjeta("llave", 0, material_prueba[1]), pin=PIN, al_pedir_pin_por_firma=_aviso_roto
+    )
+    with sesion as firmante:
+        assert firmante._firmar_resumen(b"\x00" * 32, "sha256") == b"FIRM"
+    assert sesion.pin_por_firma

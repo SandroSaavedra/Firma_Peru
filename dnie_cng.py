@@ -12,6 +12,9 @@ antes de cada NCryptSignHash y firma con NCRYPT_SILENT_FLAG, sin el cuadro de
 Windows. El PIN vive solo en un búfer de ctypes que se borra al cerrar la
 sesión o en cuanto el PIN falla; nunca se registra, ni va en un error, ni se
 devuelve. Un PIN incorrecto o bloqueado detiene la sesión: no se reintenta.
+Si la tarjeta rechaza el PIN en silencio (NTE_SILENT_CONTEXT, p. ej. el DNIe
+3.0), la sesión borra el PIN y sigue con el cuadro del PIN de Windows en cada
+firma (`SesionFirma.pin_por_firma`).
 
 Búsqueda de la llave (`listar_llaves`), en este orden y solo si la vía
 anterior no halló ninguna llave con certificado:
@@ -58,6 +61,8 @@ _NCRYPT_SILENT_FLAG = 0x40
 _BCRYPT_PAD_PKCS1 = 0x2
 _NTE_NO_MORE_ITEMS = 0x8009002A
 _NTE_NOT_FOUND = 0x80090011
+# La tarjeta quiso mostrar su cuadro del PIN y el flag silencioso lo impidió (no se tocó la tarjeta).
+NTE_SILENT_CONTEXT = 0x80090022
 _CERT_KEY_PROV_INFO_PROP_ID = 2
 _CERT_NCRYPT_KEY_SPEC = 0xFFFFFFFF  # dwKeySpec de una llave CNG (no CAPI)
 
@@ -768,10 +773,25 @@ class SesionFirma:
     firma en silencio. El búfer se llena de ceros al cerrar la sesión, si no se
     puede abrir la llave o en cuanto el PIN falla. Un PIN incorrecto o
     bloqueado (CODIGOS_PIN) detiene la sesión: las firmas siguientes fallan sin
-    tocar la tarjeta, para no gastar otro intento. NCryptSignHash nunca se reintenta.
+    tocar la tarjeta, para no gastar otro intento.
+
+    Única excepción al «nunca se reintenta»: si la tarjeta rechaza el PIN en
+    silencio (NTE_SILENT_CONTEXT, la llave exige su propio cuadro del PIN en
+    cada firma, como el DNIe 3.0), la tarjeta no llegó a tocarse. La sesión
+    borra el PIN, deja de asignarlo y pasa a pedir el PIN a Windows (sin
+    NCRYPT_SILENT_FLAG, con la ventana ya asociada) hasta cerrarse:
+    `pin_por_firma` queda en True, se llama UNA vez a `al_pedir_pin_por_firma`
+    (si se dio) y se repite esa misma firma una sola vez. Un PIN incorrecto en
+    el cuadro de Windows también detiene la sesión.
     """
 
-    def __init__(self, llave: LlaveTarjeta, hwnd: int | None = None, pin: str | None = None):
+    def __init__(
+        self,
+        llave: LlaveTarjeta,
+        hwnd: int | None = None,
+        pin: str | None = None,
+        al_pedir_pin_por_firma=None,
+    ):
         self._llave = llave
         self._hwnd = hwnd
         self._proveedor = None
@@ -783,6 +803,13 @@ class SesionFirma:
         self._pin = ctypes.create_unicode_buffer(pin) if pin else None
         self.pin_provisto = self._pin is not None
         self._error_pin: int | None = None  # código del PIN rechazado: la sesión queda detenida
+        self._pin_por_firma = False  # True: la tarjeta exige el cuadro de Windows en cada firma
+        self._al_pedir_pin_por_firma = al_pedir_pin_por_firma
+
+    @property
+    def pin_por_firma(self) -> bool:
+        """True si la tarjeta rechazó el PIN en silencio y Windows lo pide en cada firma."""
+        return self._pin_por_firma
 
     def __enter__(self) -> FirmanteCNG:
         try:
@@ -837,6 +864,21 @@ class SesionFirma:
                 self.fallidas,
             )
 
+    def _pasar_a_pin_por_firma(self):
+        """La tarjeta no acepta el PIN en silencio: Windows lo pedirá en cada firma."""
+        self._borrar_pin()
+        self._pin_por_firma = True
+        logger.warning(
+            "Sesión de firma: el DNIe exige su propio cuadro del PIN en cada firma (0x%08X); "
+            "se continúa con el PIN de Windows por página.",
+            NTE_SILENT_CONTEXT,
+        )
+        if self._al_pedir_pin_por_firma is not None:
+            try:
+                self._al_pedir_pin_por_firma()
+            except Exception:  # noqa: BLE001 - el aviso es informativo
+                logger.debug("No se pudo avisar que el PIN se pedirá en cada firma", exc_info=True)
+
     def _firmar(self, firmante: FirmanteCNG, resumen: bytes, digest_algorithm: str) -> bytes:
         if self._handle is None:
             raise ErrorCNG("La sesión de firma está cerrada.")
@@ -847,8 +889,15 @@ class SesionFirma:
             )
         try:
             if self._pin is not None:
-                self._asignar_pin()
-                firma = firmante._firmar_con_handle(self._handle, resumen, digest_algorithm, True)
+                try:
+                    self._asignar_pin()
+                    firma = firmante._firmar_con_handle(self._handle, resumen, digest_algorithm, True)
+                except ErrorCNG as e:
+                    if e.codigo != NTE_SILENT_CONTEXT:
+                        raise
+                    # La tarjeta no se tocó: misma firma, una sola vez, con el cuadro de Windows.
+                    self._pasar_a_pin_por_firma()
+                    firma = firmante._firmar_con_handle(self._handle, resumen, digest_algorithm)
             else:
                 firma = firmante._firmar_con_handle(self._handle, resumen, digest_algorithm)
         except ErrorCNG as e:

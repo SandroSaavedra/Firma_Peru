@@ -228,3 +228,14 @@ def test_firma_real_en_cada_pagina_es_fija_y_las_demas_estan_bloqueadas():
     # el texto del PIN dice quién lo pide
     assert 'id="txt-ayuda-pin"' in html and '$("txt-ayuda-pin")' in js
     assert "el.txtAyudaPin" in _funcion(js, "function actualizarAyudaPaginas()")
+
+
+def test_aviso_de_pin_en_cada_pagina_esta_conectado():
+    js = _js()
+    nota = "Este DNIe pide el PIN en cada página: ingréselo en la ventana de Windows."
+    assert f'const NOTA_PIN_POR_PAGINA = "{nota}";' in js
+    # el evento de Python cambia la nota del diálogo de avance
+    assert 'evento.evento === "pin_por_pagina"' in js
+    assert re.search(r"el\.dialogoNota\.textContent\s*=\s*NOTA_PIN_POR_PAGINA", js)
+    # y el diálogo del lote la conserva si se vuelve a dibujar
+    assert re.search(r"pinPorPagina\s*\?\s*NOTA_PIN_POR_PAGINA", js)

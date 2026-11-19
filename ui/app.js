@@ -125,6 +125,8 @@ const NOTA_PIN_LOTE =
 // Firma real en cada página: el PIN se pide una sola vez en la propia aplicación.
 const NOTA_PIN_PROPIO = "El PIN se usa solo para esta firma y no se guarda.";
 const NOTA_PIN_PROVISTO = "No se volverá a pedir el PIN. Un documento largo puede tardar varios minutos.";
+// El DNIe no aceptó el PIN en silencio (DNIe 3.0): Windows lo pide en cada página.
+const NOTA_PIN_POR_PAGINA = "Este DNIe pide el PIN en cada página: ingréselo en la ventana de Windows.";
 // Modo fijo: cada página lleva su propia firma digital. «Todas las páginas» y
 // «Solo la página de firma» se muestran bloqueadas en la interfaz.
 const MODO_PAGINAS = "cada_pagina";
@@ -1797,10 +1799,15 @@ function mostrarDialogoLote() {
     titulo: "Preparando la firma…",
     texto: "Abriendo el DNIe.",
     progreso: 0,
-    nota: estado.lote && estado.lote.pinProvisto ? NOTA_PIN_PROVISTO : NOTA_PIN_LOTE,
+    nota: notaDialogoLote(estado.lote),
     acciones: [{ texto: "Cancelar", accion: cancelarLote }],
   });
   actualizarDialogoLote();
+}
+
+function notaDialogoLote(l) {
+  if (!l) return NOTA_PIN_LOTE;
+  return l.pinPorPagina ? NOTA_PIN_POR_PAGINA : l.pinProvisto ? NOTA_PIN_PROVISTO : NOTA_PIN_LOTE;
 }
 
 // «Firmando página X de N» de la firma real en cada página (null si no aplica).
@@ -1851,6 +1858,17 @@ function progresoLote(evento) {
   if (evento.evento === "inicio") {
     estado.lote = { total: evento.total, indice: 0, hechos: 0, nombre: "", cancelando: false, pinProvisto: Boolean(evento.pin_provisto) };
     mostrarDialogoLote();
+    return;
+  }
+  if (evento.evento === "pin_por_pagina") {
+    // El DNIe no aceptó el PIN en silencio: Windows lo pedirá en cada página (y en
+    // cada documento que sigue en el lote). Se avisa en la nota del diálogo de avance.
+    if (estado.lote) estado.lote.pinPorPagina = true;
+    registrar("info", "El DNIe pide el PIN en cada página: Windows mostrará su cuadro del PIN.");
+    if (el.dialogo.dataset.tipo === "pin") {
+      el.dialogoNota.textContent = NOTA_PIN_POR_PAGINA;
+      el.dialogoNota.hidden = false;
+    }
     return;
   }
   if (evento.evento === "paginas") {

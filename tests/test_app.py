@@ -118,7 +118,8 @@ def test_error_de_firma_se_devuelve_como_dato(api, pdf_multipagina, monkeypatch)
     monkeypatch.setattr(app.FirmanteCNG, "_firmar_resumen", _cancelado)
     api.abrir_ruta(str(pdf_multipagina))
     r = api.firmar({})
-    assert r == {"ok": False, "mensaje": app._MENSAJES_CNG[0x8010006E]}
+    # cancelar el cuadro del PIN de Windows es una cancelación, no un error
+    assert r == {"ok": False, "cancelado": True, "mensaje": app._MENSAJES_CNG[0x8010006E]}
     assert not (pdf_multipagina.parent / "entrada_firmado.pdf").exists()
 
 
@@ -788,7 +789,7 @@ def test_lote_con_error_registra_clase_y_codigo(api, pdf_multipagina, monkeypatc
 class _SesionFalsa:
     """SesionFirma sin CNG: entrega el firmante de prueba (ver fixture `firmante`)."""
 
-    def __init__(self, llave, hwnd=None, pin=None):
+    def __init__(self, llave, hwnd=None, pin=None, al_pedir_pin_por_firma=None):
         self.firmante = app.FirmanteCNG(llave, hwnd=hwnd)
         self.firmas = 0
 
@@ -853,7 +854,7 @@ class _SesionConPin:
 
     creadas = []
 
-    def __init__(self, llave, hwnd=None, pin=None):
+    def __init__(self, llave, hwnd=None, pin=None, al_pedir_pin_por_firma=None):
         self.firmante = app.FirmanteCNG(llave, hwnd=hwnd)
         self.firmas = 0
         self.pin_correcto = pin == PIN
@@ -986,3 +987,40 @@ def test_info_app_devuelve_version_y_carpeta_de_registros():
 
     r = app.Api().info_app()
     assert r == {"ok": True, "version": VERSION, "registros": str(carpeta_registros())}
+
+
+# --- DNIe que no acepta el PIN en silencio (DNIe 3.0) -------------------------
+
+
+def test_el_rechazo_silencioso_ya_no_manda_a_otra_opcion_de_paginas():
+    texto = app._MENSAJES_CNG[0x80090022]
+    assert texto == "El DNIe no permitió firmar. Vuelva a intentarlo; si continúa, envíe el registro de diagnóstico."
+    assert all("otra opción de páginas" not in m for m in app._MENSAJES_CNG.values())
+
+
+@pytest.mark.parametrize("codigo", [0x8010006E, 0x800704C7, 0x80090036])
+def test_cancelar_el_cuadro_del_pin_es_una_cancelacion(codigo):
+    error = app.ErrorCNG(f"NCryptSignHash falló (0x{codigo:08X}) cancelado", codigo=codigo)
+    assert app.accion_tras_error(error) == "cancelado"
+    assert "cancel" in app.mensaje_de_error(error).lower()
+
+
+def test_la_sesion_avisa_a_la_interfaz_cuando_pide_el_pin_en_cada_pagina(api, pdf_multipagina, monkeypatch):
+    ventana = _VentanaConAvance()
+    api._asignar_ventana(ventana)
+    monkeypatch.setattr(api, "_hwnd", lambda: None)
+    recibido = {}
+
+    class _SesionQueCambia(_SesionConPin):
+        def __init__(self, llave, hwnd=None, pin=None, al_pedir_pin_por_firma=None):
+            super().__init__(llave, hwnd=hwnd, pin=pin)
+            recibido["aviso"] = al_pedir_pin_por_firma
+
+        def __enter__(self):
+            recibido["aviso"]()  # la tarjeta rechazó el PIN en silencio
+            return self.firmante
+
+    monkeypatch.setattr(app, "SesionFirma", _SesionQueCambia)
+    api.abrir_ruta(str(pdf_multipagina))
+    assert api.firmar({"paginas": "cada_pagina", "pin": PIN})["ok"]
+    assert {"evento": "pin_por_pagina"} in ventana.eventos()

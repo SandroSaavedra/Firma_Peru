@@ -585,3 +585,114 @@ def test_lote_sin_cada_pagina_ignora_el_pin(api, cng, tmp_path):
     assert cng.silenciosas == [False, False]
     assert "SmartCardPin" not in [n for _, n in cng.ventanas]
     assert api._ventana.eventos()[0]["pin_provisto"] is False
+
+
+# --- DNIe que no acepta el PIN en silencio (DNIe 3.0): el PIN de Windows en cada página
+
+
+def _rechazo_silencioso():
+    return dnie_cng.ErrorCNG("NCryptSignHash falló (0x80090022)", codigo=0x80090022)
+
+
+def test_lote_cada_pagina_rechazo_silencioso_sigue_con_el_pin_de_windows(api, cng, tmp_path, monkeypatch, caplog):
+    caplog.set_level("INFO")
+    monkeypatch.setattr(app, "INTERVALO_AVANCE_PAGINAS", 0)
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf", paginas=3)
+    api.agregar_rutas([str(r) for r in rutas])
+    cng.fallos[1] = _rechazo_silencioso()  # la 1.ª página: la tarjeta no acepta el PIN en silencio
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"] and len(r["firmados"]) == 2 and r["detenido"] is None, r
+    assert r["errores"] == []
+    # la 1.ª página se reintenta una vez con el cuadro de Windows; el resto ya es así
+    assert len(cng.firmas) == 7
+    assert cng.silenciosas == [True] + [False] * 6
+    assert [n for _, n in cng.ventanas].count("SmartCardPin") == 1
+    for f in r["firmados"]:
+        v = validar_pdf(f["salida"], permitir_red=False)
+        assert len(v) == 3 and all(x["integridad"] == "intacta" for x in v)
+
+    eventos = api._ventana.eventos()
+    avisos = [i for i, e in enumerate(eventos) if e["evento"] == "pin_por_pagina"]
+    assert len(avisos) == 1  # un solo aviso para todo el lote
+    paginas = [i for i, e in enumerate(eventos) if e["evento"] == "paginas"]
+    assert paginas[0] < avisos[0] < paginas[1]  # antes de que Windows pida el PIN de la 1.ª página
+    assert "se continúa con el PIN de Windows por página" in caplog.text
+    assert PIN not in caplog.text and all(PIN not in codigo for codigo in api._ventana.js)
+
+
+def test_lote_cada_pagina_cancelar_el_pin_de_windows_deja_todo_pendiente(api, cng, tmp_path):
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf", paginas=3)
+    api.agregar_rutas([str(r) for r in rutas])
+    cng.fallos[1] = _rechazo_silencioso()
+    cng.fallos[2] = dnie_cng.ErrorCNG("NCryptSignHash falló (0x8010006E) cancelado", codigo=0x8010006E)
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["detenido"] == "pin_cancelado" and r["mensaje"] == app._MENSAJES_CNG[0x8010006E]
+    assert r["firmados"] == [] and r["errores"] == []
+    assert _estados(api) == [("uno.pdf", "pendiente"), ("dos.pdf", "pendiente")]
+    assert len(cng.firmas) == 2
+    assert not (tmp_path / "uno_firmado.pdf").exists()
+
+
+@pytest.mark.parametrize("codigo", [0x8010006B, 0x8010006C])
+def test_lote_cada_pagina_pin_incorrecto_en_windows_detiene_el_lote(api, cng, tmp_path, codigo):
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf", paginas=3)
+    api.agregar_rutas([str(r) for r in rutas])
+    cng.fallos[1] = _rechazo_silencioso()
+    cng.fallos[2] = dnie_cng.ErrorCNG(f"NCryptSignHash falló (0x{codigo:08X}) PIN", codigo=codigo)
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["detenido"] == "tarjeta" and r["mensaje"] == app._MENSAJES_CNG[codigo]
+    assert len(cng.firmas) == 2  # el PIN incorrecto no se reintenta
+    assert _estados(api) == [("uno.pdf", "error"), ("dos.pdf", "pendiente")]
+    assert not (tmp_path / "uno_firmado.pdf").exists()
+
+
+def test_firmar_un_documento_rechazo_silencioso_sigue_con_el_pin_de_windows(api, cng, tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "INTERVALO_AVANCE_PAGINAS", 0)
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=3)
+    api.abrir_ruta(str(ruta))
+    cng.fallos[1] = _rechazo_silencioso()
+
+    r = api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"], r
+    assert r["paginas_selladas"] == [0, 1, 2]
+    assert cng.silenciosas == [True, False, False, False]
+    eventos = api._ventana.eventos()
+    assert [e for e in eventos if e["evento"] == "pin_por_pagina"] == [{"evento": "pin_por_pagina"}]
+    v = validar_pdf(r["salida"], permitir_red=False)
+    assert len(v) == 3 and all(x["integridad"] == "intacta" for x in v)
+
+
+def test_firmar_un_documento_cancelar_el_pin_de_windows_no_es_un_error(api, cng, tmp_path):
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=3)
+    api.abrir_ruta(str(ruta))
+    cng.fallos[1] = _rechazo_silencioso()
+    cng.fallos[2] = dnie_cng.ErrorCNG("NCryptSignHash falló (0x8010006E) cancelado", codigo=0x8010006E)
+
+    r = api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r == {"ok": False, "cancelado": True, "mensaje": app._MENSAJES_CNG[0x8010006E]}
+    assert not (tmp_path / "uno_firmado.pdf").exists()
+    assert _estados(api) == [("uno.pdf", "pendiente")]
+
+
+def test_firmar_un_documento_pin_incorrecto_en_windows_se_detiene(api, cng, tmp_path):
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=3)
+    api.abrir_ruta(str(ruta))
+    cng.fallos[1] = _rechazo_silencioso()
+    cng.fallos[2] = dnie_cng.ErrorCNG("NCryptSignHash falló (0x8010006B) PIN", codigo=0x8010006B)
+
+    r = api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r == {"ok": False, "mensaje": app._MENSAJES_CNG[0x8010006B]}
+    assert len(cng.firmas) == 2
+    assert not (tmp_path / "uno_firmado.pdf").exists()
+
+
+def test_firmar_un_documento_sin_rechazo_silencioso_no_avisa(api, cng, tmp_path):
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=3)
+    api.abrir_ruta(str(ruta))
+    r = api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"], r
+    assert cng.silenciosas == [True] * 3
+    assert not [e for e in api._ventana.eventos() if e["evento"] == "pin_por_pagina"]
