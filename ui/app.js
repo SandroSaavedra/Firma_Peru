@@ -55,7 +55,7 @@ const el = {
   lblGuardarComo: $("lbl-guardar-como"), btnFirmarTexto: $("btn-firmar-texto"),
   dialogoProgreso: $("dialogo-progreso"), dialogoProgresoValor: $("dialogo-progreso-valor"),
   dialogoNota: $("dialogo-nota"), dialogoLista: $("dialogo-lista"),
-  dialogoPin: $("dialogo-pin"), inpPin: $("inp-pin"), txtPaginasAyuda: $("txt-paginas-ayuda"),
+  dialogoPin: $("dialogo-pin"), inpPin: $("inp-pin"), txtPaginasAyuda: $("txt-paginas-ayuda"), txtAyudaPin: $("txt-ayuda-pin"),
   tabFirmar: $("tab-firmar"), tabValidar: $("tab-validar"),
   vistaFirmar: $("vista-firmar"), vistaValidar: $("vista-validar"),
   btnAbrir: $("btn-abrir"), btnAbrirVacio: $("btn-abrir-vacio"), btnTema: $("btn-tema"), btnInfo: $("btn-info"),
@@ -125,7 +125,11 @@ const NOTA_PIN_LOTE =
 // Firma real en cada página: el PIN se pide una sola vez en la propia aplicación.
 const NOTA_PIN_PROPIO = "El PIN se usa solo para esta firma y no se guarda.";
 const NOTA_PIN_PROVISTO = "No se volverá a pedir el PIN. Un documento largo puede tardar varios minutos.";
-const OPCIONES_PAGINAS = ["todas", "ultima", "cada_pagina"];
+// Modo fijo: cada página lleva su propia firma digital. «Todas las páginas» y
+// «Solo la página de firma» se muestran bloqueadas en la interfaz.
+const MODO_PAGINAS = "cada_pagina";
+const AYUDA_PIN_WINDOWS = "El PIN se ingresa en la ventana de Windows. Esta aplicación no lo ve ni lo guarda.";
+const AYUDA_PIN_PROPIO = "El PIN se ingresa una sola vez en esta aplicación, se usa solo para esta firma y no se guarda.";
 
 // ---------------------------------------------------------------- utilidades
 
@@ -575,7 +579,6 @@ function vaciarVisor() {
   el.notaFirmas.hidden = true;
   el.btnValidarAbierto.disabled = true;
   el.totalPaginas.textContent = "0";
-  document.querySelector('input[name="paginas"][value="todas"]').disabled = false;
   marcarOpcionPaginas(false);
   document.querySelector('input[name="pagina-firma"][value="ultima"]').checked = true;
   actualizarTextoVacio();
@@ -814,7 +817,6 @@ function configurarSegunFirmas() {
   const n = estado.info.firmas.length;
   const certificadoSinCambios = estado.info.docmdp === 1;
   const soloCampo = soloCampoDeFirma();
-  const radioTodas = document.querySelector('input[name="paginas"][value="todas"]');
 
   el.chipFirmas.hidden = n === 0;
   el.chipFirmas.replaceChildren(icono("escudo"), plural(n, "firma", "firmas"));
@@ -834,17 +836,14 @@ function configurarSegunFirmas() {
       `Este PDF ya tiene ${plural(n, "firma", "firmas")}. La nueva firma se agrega con su sello ` +
       `sin invalidar ${n === 1 ? "la anterior" : "las anteriores"}.`;
   }
-  radioTodas.disabled = soloCampo;
   marcarOpcionPaginas(soloCampo);
 }
 
-// Opción de páginas guardada. En un documento certificado (`soloCampo`) no se
-// ofrece «todas» (sellos en las demás páginas), pero sí «cada_pagina»: cada
-// página recibe su propio campo de firma, un cambio que la certificación permite.
+// Opción de páginas: siempre «cada_pagina», sin importar la preferencia guardada.
+// También vale en un documento certificado (`soloCampo`): cada página recibe su
+// propio campo de firma, un cambio que la certificación permite.
 function opcionPaginasPreferida(soloCampo) {
-  let valor = leerPreferencia("paginas", "todas");
-  if (!OPCIONES_PAGINAS.includes(valor)) valor = "todas";
-  return soloCampo && valor === "todas" ? "ultima" : valor;
+  return MODO_PAGINAS;
 }
 
 function marcarOpcionPaginas(soloCampo) {
@@ -857,7 +856,9 @@ function opcionPaginas() {
 }
 
 function actualizarAyudaPaginas() {
-  el.txtPaginasAyuda.hidden = opcionPaginas() !== "cada_pagina";
+  const cadaPagina = opcionPaginas() === "cada_pagina";
+  el.txtPaginasAyuda.hidden = !cadaPagina;
+  el.txtAyudaPin.textContent = cadaPagina ? AYUDA_PIN_PROPIO : AYUDA_PIN_WINDOWS;
 }
 
 // ---------------------------------------------------------------- render

@@ -208,3 +208,23 @@ def test_boton_info_muestra_version_y_registro():
     assert 'llamar("info_app")' in cuerpo
     assert "ACCION_ABRIR_REGISTRO" in cuerpo
     assert 'tipo: "info"' in cuerpo
+
+
+def test_firma_real_en_cada_pagina_es_fija_y_las_demas_estan_bloqueadas():
+    html, js = _html(), _js()
+    # la opción nueva va primero, marcada por defecto
+    radios = re.findall(r'<input type="radio" name="paginas" value="(\w+)"([^>]*)>', html)
+    assert [v for v, _ in radios] == ["cada_pagina", "todas", "ultima"]
+    attrs = dict(radios)
+    assert "checked" in attrs["cada_pagina"] and "disabled" not in attrs["cada_pagina"]
+    for valor in ("todas", "ultima"):
+        assert "disabled" in attrs[valor] and "checked" not in attrs[valor]
+        bloque = re.search(rf'<label[^>]*>\s*<input type="radio" name="paginas" value="{valor}".*?</label>', html, re.S).group(0)
+        assert 'class="bloqueado"' in bloque and "#i-candado" in bloque
+    # ninguna preferencia guardada ni documento certificado la cambia ni desbloquea las otras
+    assert 'return MODO_PAGINAS;' in _funcion(js, "function opcionPaginasPreferida(soloCampo)")
+    assert 'const MODO_PAGINAS = "cada_pagina";' in js
+    assert 'value="todas"]\').disabled = ' not in js and "radioTodas.disabled" not in js
+    # el texto del PIN dice quién lo pide
+    assert 'id="txt-ayuda-pin"' in html and '$("txt-ayuda-pin")' in js
+    assert "el.txtAyudaPin" in _funcion(js, "function actualizarAyudaPaginas()")

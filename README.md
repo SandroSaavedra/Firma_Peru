@@ -79,10 +79,11 @@ llave abierta (`Sesión de firma cerrada: N firma(s) …`), nunca el PIN.
 
 ### Firma real en cada página
 
-Con **Sello visible en → Firma real en cada página**, cada página recibe su
-**propia** firma digital, con su campo de firma y su sello en esa página, como
-el visado folio por folio en papel. En cambio, **Todas las páginas** pone una
-sola firma y repite el sello en las demás páginas.
+Es el **único modo de firma**: cada página recibe su **propia** firma digital,
+con su campo de firma y su sello en esa página, como el visado folio por folio
+en papel. En **Sello visible en**, la opción **Firma real en cada página** viene
+marcada; **Todas las páginas** (una firma y el sello repetido en las demás) y
+**Solo la página de firma** se muestran con candado y no se pueden elegir.
 
 - **El PIN se pide una sola vez**, en un cuadro de la propia aplicación: al
   firmar un documento o, en un lote, una vez para todos los documentos. La
@@ -222,10 +223,10 @@ Las pruebas no usan la tarjeta: la firma de Windows se simula.
 ```
 
 Genera `dist\FirmaPeru\FirmaPeru.exe` y el instalador
-`dist\installer\FirmaPeru-Setup-1.2.1.exe`. Opciones:
+`dist\installer\FirmaPeru-Setup-1.2.2.exe`. Opciones:
 
 - `-SinPruebas`: no ejecuta las pruebas antes de construir.
-- `-Version 1.2.1`: versión del instalador (predeterminada: `VERSION` de
+- `-Version 1.2.2`: versión del instalador (predeterminada: `VERSION` de
   `version.py`, la única fuente de la versión; cámbiela ahí al publicar).
 - `-SinInstalador`: solo genera la carpeta `dist\FirmaPeru`; para distribuirla,
   copie la carpeta completa.
@@ -253,7 +254,7 @@ Qué hace el instalador:
 Instalación silenciosa (por ejemplo, para distribuirlo con un script):
 
 ```powershell
-.\FirmaPeru-Setup-1.2.1.exe /VERYSILENT /SUPPRESSMSGBOXES
+.\FirmaPeru-Setup-1.2.2.exe /VERYSILENT /SUPPRESSMSGBOXES
 ```
 
 Para desinstalar, use **Configuración > Aplicaciones > Aplicaciones instaladas >

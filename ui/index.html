@@ -227,9 +227,9 @@
         <fieldset class="campo">
           <legend>Sello visible en</legend>
           <div class="segmentado">
-            <label><input type="radio" name="paginas" value="todas" checked><span>Todas las páginas</span></label>
-            <label><input type="radio" name="paginas" value="ultima"><span>Solo la página de firma</span></label>
-            <label class="segmento-ancho"><input type="radio" name="paginas" value="cada_pagina"><span>Firma real en cada página</span></label>
+            <label class="segmento-ancho"><input type="radio" name="paginas" value="cada_pagina" checked><span>Firma real en cada página</span></label>
+            <label class="bloqueado" title="No disponible: cada página lleva su propia firma"><input type="radio" name="paginas" value="todas" disabled><span><svg class="ic"><use href="#i-candado"/></svg>Todas las páginas</span></label>
+            <label class="bloqueado" title="No disponible: cada página lleva su propia firma"><input type="radio" name="paginas" value="ultima" disabled><span><svg class="ic"><use href="#i-candado"/></svg>Solo la página de firma</span></label>
           </div>
           <p class="ayuda" id="txt-paginas-ayuda" hidden>Una firma digital por página; pide el PIN una sola vez.</p>
         </fieldset>
@@ -262,7 +262,7 @@
           <button class="btn btn-primario btn-grande btn-firmar" id="btn-firmar" type="button" disabled title="Firmar (Ctrl+Enter)">
             <svg class="ic"><use href="#i-pluma"/></svg><span id="btn-firmar-texto">Firmar documento</span>
           </button>
-          <p class="ayuda ayuda-pin"><svg class="ic"><use href="#i-candado"/></svg>El PIN se ingresa en la ventana de Windows. Esta aplicación no lo ve ni lo guarda.</p>
+          <p class="ayuda ayuda-pin"><svg class="ic"><use href="#i-candado"/></svg><span id="txt-ayuda-pin">El PIN se ingresa en la ventana de Windows. Esta aplicación no lo ve ni lo guarda.</span></p>
           <button class="enlace enlace-registro" id="btn-abrir-registro" type="button"
             title="Abre la carpeta con firmador.log. Envíe ese archivo al reportar un problema.">Abrir registro de diagnóstico</button>
         </div>
