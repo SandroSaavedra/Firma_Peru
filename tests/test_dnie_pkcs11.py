@@ -18,6 +18,8 @@ from cryptography.hazmat.primitives.asymmetric import padding, utils
 import dnie_cng
 import dnie_pkcs11 as p11
 
+CKR_SLOT_ID_INVALID = 0x3
+
 PIN = "975310"
 RUTA_FALSA = r"C:\IDEMIA\idplug-pkcs11.dll"
 _HASHES = {"sha256": hashes.SHA256, "sha384": hashes.SHA384, "sha512": hashes.SHA512}
@@ -62,6 +64,9 @@ class ModuloFalso:
         self.firmados = []  # datos que recibió cada C_Sign
         self.cargas = 0
         self.inicializado = 0  # C_Initialize sin su C_Finalize
+        # Like the IDEMIA module (field log 2026-11-20): after each C_Initialize,
+        # slot IDs are only valid once C_GetSlotList ran; before that, CKR_SLOT_ID_INVALID.
+        self.slots_listados = False
         self.sesiones = {}  # handle -> slot (abiertas)
         self.logueado = set()
         self._siguiente = 1000
@@ -86,6 +91,10 @@ class ModuloFalso:
         if operacion in self.fallos:
             raise p11.ErrorPkcs11(operacion, self.fallos[operacion])
 
+    def _exigir_slots_listados(self, operacion):
+        if not self.slots_listados:
+            raise p11.ErrorPkcs11(operacion, CKR_SLOT_ID_INVALID)
+
 
 class _CryptokiFalso:
     """La misma interfaz que `dnie_pkcs11._Cryptoki`, sobre un `ModuloFalso`."""
@@ -98,13 +107,16 @@ class _CryptokiFalso:
     def inicializar(self):
         self.m._fallar("C_Initialize")
         self.m.inicializado += 1
+        self.m.slots_listados = False
 
     def finalizar(self):
         self.m._fallar("C_Finalize")
         self.m.inicializado -= 1
+        self.m.slots_listados = False
 
     def slots(self, con_token):
         self.m._fallar("C_GetSlotList")
+        self.m.slots_listados = True
         con = sorted(self.m.tokens)
         return con if con_token else sorted(con + self.m.slots_vacios)
 
@@ -114,14 +126,17 @@ class _CryptokiFalso:
 
     def info_token(self, slot):
         self.m._fallar("C_GetTokenInfo")
+        self.m._exigir_slots_listados("C_GetTokenInfo")
         return p11.InfoToken("DNIe", "IDEMIA", "IDPlug", "0001", self.m.tokens[slot].flags, 4, 8)
 
     def mecanismos(self, slot):
         self.m._fallar("C_GetMechanismList")
+        self.m._exigir_slots_listados("C_GetMechanismList")
         return list(self.m.mecanismos_)
 
     def abrir_sesion(self, slot):
         self.m._fallar("C_OpenSession")
+        self.m._exigir_slots_listados("C_OpenSession")
         self.m._siguiente += 1
         self.m.sesiones[self.m._siguiente] = slot
         return self.m._siguiente

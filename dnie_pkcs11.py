@@ -618,6 +618,10 @@ class SesionPkcs11:
             self._ck = _Cryptoki(u.ruta)
             self._ck.inicializar()
             self._inicializado = True
+            # After C_Initialize the IDEMIA module only accepts slot IDs once
+            # C_GetSlotList ran (otherwise CKR_SLOT_ID_INVALID, field log 2026-11-20).
+            if u.slot not in self._ck.slots(True):
+                raise ErrorCNG(f"El slot {u.slot} del DNIe ya no tiene token.")
             info = self._ck.info_token(u.slot)
             if info.flags & CKF_USER_PIN_LOCKED:
                 raise ErrorPkcs11("C_GetTokenInfo (PIN bloqueado)", CKR_PIN_LOCKED)
