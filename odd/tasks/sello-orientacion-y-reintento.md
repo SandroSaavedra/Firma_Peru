@@ -81,3 +81,4 @@
   - README "Páginas rotadas" rewritten for the new rule.
   - RED: 64 failed, 1 passed (no `giro_de_sello` / `rect_sello(rotacion=)`). GREEN: `python -m pytest -q` 473 passed.
   - Next: T4 must mirror `giro_de_sello`, the frame mapping and the turned preview in `ui/app.js`; until then the UI preview of landscape-displayed or rotated pages does not match the signed result, and hand-placed positions on θ ≠ 0 pages are sent in unrotated fractions.
+  - Commit `4016fa8`. Parent spot check on the field PDF: page 375 (A4, /Rotate 270) displays the stamp at (400–560, 30–70), the same as page 1; pages 134 (A3, /Rotate 90) and 279 (A3, landscape box) display it at (1109–1149, 566–726), the same as the approved page 262. Parent re-run: 473 passed.
