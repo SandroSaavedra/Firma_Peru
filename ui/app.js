@@ -1,11 +1,23 @@
 // Firmador DNIe — lógica de la interfaz.
-// Convención del sello (igual que firma_pdf.py): su posición (esquina inferior
-// izquierda) va en fracciones 0..1 de `page.view` (CropBox ∩ MediaBox), origen
-// abajo-izquierda, espacio PDF sin rotar; su tamaño es fijo por tipo, en pt.
-// La conversión pantalla <-> PDF se hace con el viewport de pdf.js, que ya
-// considera la rotación de la página.
+// Convención del sello (igual que firma_pdf.py): su tamaño es fijo por tipo, en
+// pt, y su posición (esquina inferior izquierda) va en fracciones 0..1 del marco
+// de la página: `page.view` (CropBox ∩ MediaBox) girado según cómo se ve la
+// página (geometria.js, giroDeSello). En una página vertical sin /Rotate el
+// marco es el espacio PDF sin rotar. La conversión pantalla <-> PDF se hace con
+// el viewport de pdf.js, que ya considera la rotación de la página.
 
 import * as pdfjsLib from "./vendor/pdfjs/pdf.min.mjs";
+import {
+  POSICIONES_PREDETERMINADAS,
+  TAMANOS_SELLO,
+  giroDeSello,
+  giroEnPantalla,
+  posicionDeRect,
+  rectDesdePixeles,
+  rectEnPixeles,
+  rectSello as rectSelloPdf,
+  tamanoMarco,
+} from "./geometria.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("./vendor/pdfjs/pdf.worker.min.mjs", import.meta.url).href;
 const RUTA_PDFJS = new URL("./vendor/pdfjs/", import.meta.url).href;
@@ -17,15 +29,15 @@ const TIPOS = {
   firma: {
     plantilla: "Firmado digitalmente por:\n{firmante}\nMotivo: {motivo}\nFecha: {fecha}",
     tamMaximo: 9,
-    tamano: { ancho: 160, alto: 40 },
-    posicion: { x: 400 / 595, y: 30 / 842 },
+    tamano: TAMANOS_SELLO.firma,
+    posicion: POSICIONES_PREDETERMINADAS.firma,
     ayuda: "Logo a la izquierda y los datos de la firma a la derecha.",
   },
   visto_bueno: {
     plantilla: "Firmado digitalmente por\n{firmante}\nMotivo: {motivo}\nFecha: {fecha}",
     tamMaximo: 8,
-    tamano: { ancho: 140, alto: 110 },
-    posicion: { x: 420 / 595, y: 30 / 842 },
+    tamano: TAMANOS_SELLO.visto_bueno,
+    posicion: POSICIONES_PREDETERMINADAS.visto_bueno,
     ayuda: "Imagen de visto bueno arriba y los datos de la firma debajo, sin superponerse.",
   },
 };
@@ -95,6 +107,7 @@ const estado = {
   imagenes: { logo: null, imagen_vb: null }, // { nombre, datos (data URL) } o null
   viewport: null,
   vistaPdf: null,
+  rotacionPdf: 0,      // /Rotate de la página a la vista (la que usa Python al firmar)
   ticket: 0,
   tareaRender: null,
   dnie: null,
@@ -887,6 +900,7 @@ async function renderizar() {
   const vp = pagina.getViewport({ scale: estado.zoom.escala });
   estado.viewport = vp;
   estado.vistaPdf = pagina.view;
+  estado.rotacionPdf = rotacionDePagina(estado.pagina, vp);
 
   el.hoja.style.width = `${Math.floor(vp.width)}px`;
   el.hoja.style.height = `${Math.floor(vp.height)}px`;
@@ -1068,7 +1082,7 @@ function actualizarMarca(n) {
   datos.marca.hidden = !visible;
   datos.marca.classList.toggle("es-campo", n === campo);
   if (!visible) return;
-  const r = cajaAPixeles(datos.vp, datos.view, cajaDePagina(n));
+  const r = cajaAPixeles(datos.vp, datos.view, cajaDePagina(n), rotacionDePagina(n, datos.vp));
   Object.assign(datos.marca.style, {
     left: `${(r.left / datos.vp.width) * 100}%`,
     top: `${(r.top / datos.vp.height) * 100}%`,
@@ -1083,37 +1097,25 @@ function actualizarMarcas() {
 
 // ---------------------------------------------------------------- sello
 
-// Igual que firma_pdf.rect_sello: posición relativa y tamaño fijo del tipo en pt;
-// si no cabe, se desplaza hasta quedar dentro de la página.
-function rectPdf(view, caja = cajaVisible(), tipo = estado.tipo) {
-  const [x0, y0, x1, y1] = view;
-  const { ancho, alto } = TIPOS[tipo].tamano;
-  const x = Math.max(x0, Math.min(x0 + caja.x * (x1 - x0), x1 - ancho));
-  const y = Math.max(y0, Math.min(y0 + caja.y * (y1 - y0), y1 - alto));
-  return [x, y, x + ancho, y + alto];
+// /Rotate of page n (from 1) as Python reads it when signing (`rotaciones`
+// of the document); pdf.js's own value when Python did not send it.
+function rotacionDePagina(n, vp) {
+  const r = estado.info && Array.isArray(estado.info.rotaciones) ? estado.info.rotaciones[n - 1] : undefined;
+  return Number.isFinite(r) ? r : vp.rotation;
 }
 
-function cajaAPixeles(vp, view, caja = cajaVisible()) {
-  const [x1, y1, x2, y2] = rectPdf(view, caja);
-  const a = vp.convertToViewportPoint(x1, y1);
-  const b = vp.convertToViewportPoint(x2, y2);
-  return {
-    left: Math.min(a[0], b[0]),
-    top: Math.min(a[1], b[1]),
-    width: Math.abs(b[0] - a[0]),
-    height: Math.abs(b[1] - a[1]),
-  };
+// Pixel box of the stamp that firma_pdf.rect_sello will sign on this page:
+// fixed size, laid out in the page's frame (turned on landscape-displayed or
+// rotated pages) and shifted to fit inside.
+function cajaAPixeles(vp, view, caja = cajaVisible(), rotacion = estado.rotacionPdf) {
+  return rectEnPixeles(vp, rectSelloPdf(caja, view, estado.tipo, rotacion));
 }
 
-// Posición { x, y } (esquina inferior izquierda) del rectángulo en píxeles; el tamaño no se guarda.
-function pixelesACaja(r, vp = estado.viewport, view = estado.vistaPdf) {
-  const [x0, y0, x1, y1] = view;
-  const a = vp.convertToPdfPoint(r.left, r.top);
-  const b = vp.convertToPdfPoint(r.left + r.width, r.top + r.height);
-  return {
-    x: limitar((Math.min(a[0], b[0]) - x0) / (x1 - x0), 0, 1),
-    y: limitar((Math.min(a[1], b[1]) - y0) / (y1 - y0), 0, 1),
-  };
+// Position { x, y } in frame fractions of a pixel box (its lower-left corner in
+// the frame); the size is not stored. Python's rect_sello turns it back into
+// that same box.
+function pixelesACaja(r, vp = estado.viewport, view = estado.vistaPdf, rotacion = estado.rotacionPdf) {
+  return posicionDeRect(rectDesdePixeles(vp, r), view, rotacion);
 }
 
 // Posición guardada (preferencia «caja» o posición propia) sin el tamaño de
@@ -1157,7 +1159,8 @@ function posicionarSello() {
 
 // Mover el sello cambia solo la posición de la página a la vista en este
 // documento; «Aplicar a todas las páginas» la extiende al documento y
-// «Aplicar a todos los documentos», a todos.
+// «Aplicar a todos los documentos», a todos. Se guarda en fracciones del marco:
+// el mismo lugar relativo en toda página que se vea con la misma orientación.
 function confirmarCaja() {
   const a = ajusteEditable();
   if (!a) return;
@@ -1260,9 +1263,12 @@ const px = (v) => `${v}px`;
 // Reproduce la composición de firma_pdf.estilo_sello en píxeles (1 pt = viewport.scale px).
 function ajustarTextoSello() {
   const r = rectSello();
-  // En páginas con /Rotate el sello se dibuja en el espacio sin rotar, así que
-  // su contenido aparece girado junto con la página: la vista previa lo imita.
-  const rot = (((estado.viewport ? estado.viewport.rotation : 0) % 360) + 360) % 360;
+  // The signed appearance is turned by θ against the page's /Rotate: upright on
+  // pages displayed in portrait, vertical (reads upward) on pages displayed in
+  // landscape. The preview turns its content the same way.
+  const rot = estado.viewport
+    ? giroEnPantalla(estado.vistaPdf, estado.rotacionPdf, estado.viewport.rotation)
+    : 0;
   const girado = rot === 90 || rot === 270;
   const W = girado ? r.height : r.width;
   const H = girado ? r.width : r.height;
@@ -1345,10 +1351,11 @@ function actualizarVistaPrevia() {
 // ---------------------------------------------------------------- tipo de sello y logo
 
 // Al cambiar de tipo el sello cambia de tamaño: se mantiene su esquina inferior
-// derecha (referida a la página a la vista, o a A4 si no hay documento).
+// derecha en el marco (referida a la página a la vista, o a A4 si no hay documento).
 function posicionAjustadaAlTipo(c, anterior, tipo) {
   const view = estado.vistaPdf || [0, 0, ANCHO_A4, 842];
-  const diferencia = (TIPOS[anterior].tamano.ancho - TIPOS[tipo].tamano.ancho) / (view[2] - view[0]);
+  const [anchoMarco] = tamanoMarco(view, giroDeSello(view, estado.vistaPdf ? estado.rotacionPdf : 0));
+  const diferencia = (TIPOS[anterior].tamano.ancho - TIPOS[tipo].tamano.ancho) / anchoMarco;
   return { x: limitar(c.x + diferencia, 0, 1), y: c.y };
 }
 

@@ -220,6 +220,12 @@ La posición (automática, del documento o puesta a mano en una página) se
 interpreta en ese mismo marco: en las páginas que se ven verticales y no están
 rotadas es la misma de siempre.
 
+La vista previa muestra el sello de cada página tal como se firmará: derecho en
+las páginas que se ven verticales y girado en el margen derecho de las que se
+ven horizontales. Al arrastrarlo, su posición se guarda en el marco de esa
+página, así que «Aplicar a todas las páginas» lo pone en el mismo lugar
+relativo de cada página que se vea con la misma orientación.
+
 ## Línea de comandos
 
 ```powershell
