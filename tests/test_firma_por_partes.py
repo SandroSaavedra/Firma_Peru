@@ -5,12 +5,17 @@ firma cada página de cada parte, con la misma sesión de firma.
 
 `PAGINAS_POR_PARTE` se reduce a 3 para que las pruebas sean rápidas.
 """
+import io
 from pathlib import Path
 
 import pytest
 
 import firma_pdf
 import validacion
+from pyhanko.pdf_utils import generic
+from pyhanko.pdf_utils.generic import pdf_name
+from pyhanko.pdf_utils.writer import PageObject, PdfFileWriter
+
 from conftest import construir_pdf
 from firma_pdf import ErrorFirma, FirmaCancelada, OpcionesFirma, firmar_pdf
 from test_firma_por_pagina import _campos_por_pagina, _leer, _rect, _validas_con_app
@@ -240,3 +245,231 @@ def test_las_otras_opciones_de_paginas_no_dividen(tmp_path, firmante):
     resultado = firmar_pdf(entrada, salida, firmante, "PRUEBA", OpcionesFirma(paginas="todas"))
     assert resultado.salida == str(salida) and resultado.partes == []
     assert len(validacion.validar_pdf(salida, permitir_red=False)) == 1
+
+
+# --- T2: regresiones del sello en las partes (expediente real de 597 páginas) -------
+
+
+A4 = (0, 0, 595.22, 842)
+A3_VERTICAL = (0, 0, 842, 1191)
+A3_HORIZONTAL = (0, 0, 1191, 842)
+A4_GIRADA = (0, 0, 841.86, 595.26)  # se ve vertical con /Rotate 270
+
+
+def _pdf_a_medida(ruta, paginas, heredado=None) -> Path:
+    """
+    PDF de prueba con páginas a medida. Cada página: media_box y, opcionales,
+    crop_box, rotacion y annots_vacias (un arreglo /Annots VACÍO e indirecto,
+    propio de la página, como en el expediente real). `heredado` (media_box,
+    crop_box, rotacion) va en el nodo /Pages raíz y se quita de las páginas
+    que no lo redefinen: las páginas lo heredan del árbol.
+    """
+    w = PdfFileWriter()
+    for spec in paginas:
+        flujo = w.add_object(generic.StreamObject(stream_data=b"0 0 1 rg 20 20 50 50 re f"))
+        pagina = PageObject(contents=flujo, media_box=spec.get("media_box") or (0, 0, 1, 1))
+        if "rotacion" in spec:
+            pagina[pdf_name("/Rotate")] = generic.NumberObject(spec["rotacion"])
+        if spec.get("crop_box"):
+            pagina[pdf_name("/CropBox")] = generic.ArrayObject(map(generic.FloatObject, spec["crop_box"]))
+        if spec.get("annots_vacias"):
+            pagina[pdf_name("/Annots")] = w.add_object(generic.ArrayObject())
+        if not spec.get("media_box"):
+            del pagina["/MediaBox"]
+        w.insert_page(pagina)
+    if heredado:
+        raiz = w.root["/Pages"]
+        claves = {"media_box": "/MediaBox", "crop_box": "/CropBox"}
+        for clave, nombre in claves.items():
+            if clave in heredado:
+                raiz[pdf_name(nombre)] = generic.ArrayObject(map(generic.FloatObject, heredado[clave]))
+        if "rotacion" in heredado:
+            raiz[pdf_name("/Rotate")] = generic.NumberObject(heredado["rotacion"])
+    salida = io.BytesIO()
+    w.write(salida)
+    ruta.write_bytes(salida.getvalue())
+    return ruta
+
+
+def _logo(tmp_path, ancho=300, alto=200):
+    from PIL import Image
+
+    ruta = tmp_path / "logo.png"
+    Image.new("RGB", (ancho, alto), (200, 30, 30)).save(ruta)
+    return ruta
+
+
+def _recursos_resueltos(objeto, archivo, vistos=None):
+    """
+    (categoría, nombre, objeto) de cada recurso alcanzable desde la apariencia
+    `objeto` (XObject, fuentes y ExtGState, también dentro de los Form
+    anidados). Falla si una referencia no existe en `archivo`.
+    """
+    vistos = vistos if vistos is not None else set()
+    encontrados = []
+    if "/Resources" not in objeto:
+        return encontrados
+    recursos = objeto["/Resources"]
+    for categoria in ("/XObject", "/Font", "/ExtGState"):
+        if categoria not in recursos:
+            continue
+        diccionario = recursos[categoria]
+        for nombre in diccionario:
+            crudo = diccionario.raw_get(nombre)
+            destino = crudo.get_object()
+            assert not isinstance(destino, generic.NullObject), f"{archivo}: {nombre} -> {crudo} no existe"
+            encontrados.append((categoria, nombre, destino))
+            if categoria == "/XObject" and destino.get("/Subtype") == "/Form":
+                clave = getattr(crudo, "idnum", id(destino))
+                if clave not in vistos:
+                    vistos.add(clave)
+                    encontrados += _recursos_resueltos(destino, archivo, vistos)
+    return encontrados
+
+
+def test_cada_parte_incrusta_su_propio_logo(tmp_path, firmante, material_prueba):
+    """
+    Regresión: el logo «incrustado una vez por documento» se reutilizaba entre
+    partes; desde la parte 2 el sello apuntaba a un número de objeto de la
+    parte 1 (inexistente o ajeno en la parte nueva) y el logo no se veía.
+    """
+    entrada = _pdf(tmp_path, 8)
+    resultado = firmar_pdf(
+        entrada, tmp_path / "s.pdf", firmante, "PRUEBA", OpcionesFirma(paginas="cada_pagina", logo=str(_logo(tmp_path)))
+    )
+    assert len(resultado.partes) == 3
+    for ruta in resultado.partes:
+        reader = _leer(ruta)
+        logos = set()
+        for firma in reader.embedded_signatures:
+            recursos = _recursos_resueltos(firma.sig_field["/AP"]["/N"], ruta)
+            imagenes = [obj for categoria, _, obj in recursos if obj.get("/Subtype") == "/Image"]
+            assert [(int(i["/Width"]), int(i["/Height"])) for i in imagenes] == [(300, 200)], ruta
+            for categoria, nombre, obj in recursos:
+                if categoria == "/Font":
+                    assert obj.get("/Type") == "/Font", (ruta, nombre)
+                elif categoria == "/ExtGState":
+                    assert obj.get("/Type") in (None, "/ExtGState"), (ruta, nombre)
+                else:
+                    assert obj.get("/Subtype") in ("/Image", "/Form"), (ruta, nombre)
+            xobjetos = firma.sig_field["/AP"]["/N"]["/Resources"]["/XObject"]
+            logos.update(xobjetos.raw_get(n).reference for n in xobjetos)
+        assert len(logos) == 1, ruta  # dentro de cada parte el logo se incrusta una sola vez
+        assert len(_validas_con_app(ruta, material_prueba)) == len(reader.embedded_signatures)
+
+
+def _anotaciones_por_pagina(reader):
+    total = int(reader.root["/Pages"]["/Count"])
+    salida = []
+    for i in range(total):
+        pagina = reader.find_page_for_modification(i)[0].get_object()
+        salida.append([a.get_object() for a in pagina["/Annots"]] if "/Annots" in pagina else [])
+    return salida
+
+
+def _dentro(rect, vista, tolerancia=0.01):
+    return (
+        rect[0] >= vista[0] - tolerancia
+        and rect[1] >= vista[1] - tolerancia
+        and rect[2] <= vista[2] + tolerancia
+        and rect[3] <= vista[3] + tolerancia
+    )
+
+
+TAMANOS_MEZCLADOS = [
+    {"media_box": A4, "annots_vacias": True},
+    {"media_box": A3_VERTICAL, "rotacion": 270, "annots_vacias": True},
+    {"media_box": A4, "annots_vacias": True},
+    {"media_box": A3_HORIZONTAL, "annots_vacias": True},
+    {"media_box": A4, "annots_vacias": True},
+    {"media_box": A3_VERTICAL, "annots_vacias": True},
+    {"media_box": A4_GIRADA, "rotacion": 270, "annots_vacias": True},
+    {"media_box": A4, "annots_vacias": True},
+    {"media_box": A3_VERTICAL, "rotacion": 90, "annots_vacias": True},
+    {"media_box": A4, "annots_vacias": True},
+]
+
+
+def test_tamanos_mezclados_cada_pagina_solo_su_sello_y_dentro_de_su_vista(tmp_path, firmante, material_prueba):
+    """
+    Regresión: el expediente real tiene /Annots VACÍOS e indirectos en muchas
+    páginas; al dividir, `compress_identical_objects` los fusionaba en UN solo
+    arreglo compartido por varias páginas, y cada firma de esas páginas
+    aparecía en todas: en una A4 se veían los sellos de las A3 (calculados
+    para 842 pt de ancho), dibujados fuera de la página, a la derecha.
+    Cada página de cada parte debe tener SOLO su propio widget, en la posición
+    relativa pedida de SU vista y completamente dentro de ella.
+    """
+    entrada = _pdf_a_medida(tmp_path / "expediente.pdf", TAMANOS_MEZCLADOS)
+    posicion = firma_pdf.posicion_predeterminada("firma")
+    propias = {7: firma_pdf.PosicionRelativa(x=0.05, y=0.9), 8: firma_pdf.PosicionRelativa(x=0.99, y=0.99)}
+    resultado = firmar_pdf(
+        entrada,
+        tmp_path / "s.pdf",
+        firmante,
+        "PRUEBA",
+        OpcionesFirma(paginas="cada_pagina", logo=str(_logo(tmp_path)), posiciones_paginas=propias),
+    )
+    assert len(resultado.partes) == 4
+    for numero, ruta in enumerate(resultado.partes):
+        reader = _leer(ruta)
+        anotaciones = _anotaciones_por_pagina(reader)
+        por_pagina = _campos_por_pagina(reader)
+        for local, anots in enumerate(anotaciones):
+            original = numero * 3 + local
+            spec = TAMANOS_MEZCLADOS[original]
+            vista = tuple(float(v) for v in firma_pdf.vista_de_pagina(reader, local))
+            assert vista == pytest.approx(spec["media_box"]), (ruta, local)
+            assert len(anots) == 1, (ruta, local, [_rect(a) for a in anots])
+            (campo,) = por_pagina[local]
+            assert anots[0]["/T"] == campo["/T"]
+            esperado = firma_pdf.rect_sello(propias.get(original, posicion), vista, "firma")
+            assert _rect(campo) == pytest.approx(esperado, abs=0.01), (ruta, local)
+            assert _dentro(_rect(campo), vista), (ruta, local)
+        assert len(_validas_con_app(ruta, material_prueba)) == len(anotaciones)
+
+
+def test_cajas_heredadas_y_origen_distinto_de_cero_se_conservan_en_las_partes(tmp_path, firmante):
+    """
+    /MediaBox, /CropBox y /Rotate heredados del árbol de páginas, y cajas con
+    origen distinto de cero: cada página de cada parte conserva su vista y su
+    rotación, y el sello (también con posición propia en una parte posterior)
+    se calcula contra esa vista, igual que sin dividir.
+    """
+    heredado = {"media_box": (100, 200, 795, 1042), "crop_box": (120, 230, 760, 1000), "rotacion": 90}
+    paginas = [
+        {},  # todo heredado
+        {"media_box": (-300, -400, 295, 442)},  # origen negativo, CropBox heredado fuera: vista = intersección
+        {"crop_box": (150, 260, 500, 700)},
+        {"media_box": (50, 60, 1241, 902), "rotacion": 0},
+        {},
+        {"media_box": (0, 0, 842, 1191), "crop_box": (10, 20, 832, 1181), "rotacion": 270},
+        {},
+    ]
+    entrada = _pdf_a_medida(tmp_path / "expediente.pdf", paginas, heredado=heredado)
+    fuente = _leer(entrada)
+    vistas = [tuple(float(v) for v in firma_pdf.vista_de_pagina(fuente, i)) for i in range(len(paginas))]
+    rotaciones = [firma_pdf._rotacion(fuente, i) for i in range(len(paginas))]
+    assert vistas[0] == (120, 230, 760, 1000) and rotaciones[0] == 90 and rotaciones[3] == 0
+
+    posicion = firma_pdf.PosicionRelativa(x=0.3, y=0.2)
+    propias = {4: firma_pdf.PosicionRelativa(x=0.9, y=0.95), 6: firma_pdf.PosicionRelativa(x=0.0, y=0.0)}
+    resultado = firmar_pdf(
+        entrada,
+        tmp_path / "s.pdf",
+        firmante,
+        "PRUEBA",
+        OpcionesFirma(paginas="cada_pagina", posicion=posicion, posiciones_paginas=propias),
+    )
+    assert len(resultado.partes) == 3
+    for numero, ruta in enumerate(resultado.partes):
+        reader = _leer(ruta)
+        por_pagina = _campos_por_pagina(reader)
+        for local, (campo,) in por_pagina.items():
+            original = numero * 3 + local
+            vista = tuple(float(v) for v in firma_pdf.vista_de_pagina(reader, local))
+            assert vista == pytest.approx(vistas[original]), (ruta, local)
+            assert firma_pdf._rotacion(reader, local) == rotaciones[original], (ruta, local)
+            esperado = firma_pdf.rect_sello(propias.get(original, posicion), vistas[original], "firma")
+            assert _rect(campo) == pytest.approx(esperado, abs=0.01), (ruta, local)
+            assert _dentro(_rect(campo), vista), (ruta, local)

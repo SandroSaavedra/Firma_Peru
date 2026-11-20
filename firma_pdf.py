@@ -85,6 +85,7 @@ import re
 import shutil
 import tempfile
 import time
+import weakref
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import lru_cache
@@ -92,6 +93,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from pypdf import PdfReader, PdfWriter
+from pypdf.generic import ArrayObject, NameObject
 from pyhanko.pdf_utils import generic
 from pyhanko.pdf_utils.content import RawContent
 from pyhanko.pdf_utils.font import FontEngineFactory, SimpleFontEngineFactory
@@ -536,18 +538,29 @@ def _imagen_reutilizable(imagen):
     siguientes apunta al MISMO XObject de imagen, ya escrito en una revisión
     anterior del mismo documento (las revisiones se encadenan sobre un solo
     flujo, así que el número de objeto sigue siendo válido).
+
+    El número de objeto solo vale en ESE documento: se guarda junto con el
+    flujo de entrada del writer (referencia débil; un `id()` podría repetirse
+    en otro flujo nuevo). Con otro flujo (otra parte de un documento dividido,
+    otro archivo) la imagen se incrusta de nuevo en él.
     """
     from pyhanko.pdf_utils.images import PdfImage
 
     class _ImagenReutilizable(PdfImage):
-        _incrustada: tuple[int, int] | None = None
+        # (flujo de entrada del documento, (número de objeto, generación)).
+        _incrustada: tuple[weakref.ref, tuple[int, int]] | None = None
 
         @property
         def image_ref(self) -> generic.IndirectObject:
-            if self._incrustada is not None:
-                return generic.IndirectObject(*self._incrustada, self.writer)
+            flujo = getattr(self.writer, "input_stream", None)
+            if self._incrustada is not None and flujo is not None:
+                flujo_incrustada, ref = self._incrustada
+                if flujo_incrustada() is flujo:
+                    return generic.IndirectObject(*ref, self.writer)
             ref = super().image_ref
-            self._incrustada = (ref.idnum, ref.generation)
+            self._incrustada = None
+            if flujo is not None:
+                self._incrustada = (weakref.ref(flujo), (ref.idnum, ref.generation))
             return ref
 
     return _ImagenReutilizable(imagen)
@@ -969,11 +982,24 @@ def nombres_de_partes(salida, partes: int) -> tuple[Path, list[str]]:
 
 
 def _extraer_paginas(lector: PdfReader, inicio: int, fin: int) -> bytes:
-    """PDF nuevo con las páginas [inicio, fin) del original; los objetos repetidos se guardan una vez."""
+    """
+    PDF nuevo con las páginas [inicio, fin) del original; los objetos repetidos
+    se guardan una vez. pypdf conserva en cada página las cajas y la rotación
+    heredadas del árbol de páginas (/MediaBox, /CropBox, /Rotate).
+
+    `compress_identical_objects` fusiona también los arreglos /Annots iguales
+    (p. ej. los VACÍOS e indirectos de muchas páginas escaneadas): varias
+    páginas quedarían con el MISMO arreglo y el widget de firma de cada una
+    aparecería en todas (en una A4, los sellos de las A3, fuera de la página).
+    Por eso, después, cada página recibe su propio arreglo /Annots (directo).
+    """
     escritor = PdfWriter()
     for indice in range(inicio, fin):
         escritor.add_page(lector.pages[indice])
     escritor.compress_identical_objects()
+    for pagina in escritor.pages:
+        if "/Annots" in pagina:
+            pagina[NameObject("/Annots")] = ArrayObject(pagina["/Annots"] or [])
     flujo = io.BytesIO()
     escritor.write(flujo)
     return flujo.getvalue()
