@@ -64,6 +64,58 @@ Field and lab evidence from 2026-11-19:
     - No loose PDF next to the destination; only the folder `original_sin_firmar_firmado`.
   - Commits: `5020460` (core split + tests + pypdf), `2849349` (app, UI, README, version 1.2.6), plus the docs commit with this record.
 
+- [x] T2 — Fix per-part stamp regressions found in the field (v1.2.7).
+  - Route: delegated writer. Trigger: field evidence sweep (8 parts × 597 pages) plus 2 non-trivial files.
+  - Field evidence: real 597-page expediente signed with v1.2.6 and a real DNIe (8 parts; the user later renamed the folder to `…_firmado-bo`). Log: «posiciones por página=3». A sweep compared all 597 pages of the 8 parts with the source.
+  - Root cause 1, the logo is missing from parts 2–8:
+    - the logo `PdfImage` reuse (one embed per document) cached only the object number, across parts;
+    - part 1 stamps → `Image 700x481` (75/75);
+    - parts 2, 4, 6, 7 → object 2079 missing;
+    - parts 3, 5, 8 → an unrelated object (`/FontDescriptor`, a dict without a type, a `/Widget`).
+    - Fix: the cache is tied to the writer's input stream (weak reference); another stream embeds the image again.
+  - Root cause 2, a stamp drawn outside the page:
+    - the source has indirect EMPTY `/Annots []` arrays on 57 pages;
+    - pypdf `compress_identical_objects()` merged them into one shared array per part: part 2 → 2 pages, part 3 → 11, part 4 → 14, part 7 → 3;
+    - every signature widget of those pages then appeared on all of them.
+    - In part 4, the A3 pages 262, 264, 266, 288 and 292 (MediaBox 842×1191, /Rotate 270) have the widget Rect [566.05, 42.43, 726.05, 82.43]. That Rect is correct for an A3 page, but it also showed on the A4 pages 228, 231, 232, 235, 238, 241, 243, 246 and 251 (595.22×842), where it falls outside the page, to the right.
+    - Reproduced with pypdf alone: without compression no array is shared; with it, array 133 is shared by 14 pages.
+    - Fix: after `compress_identical_objects()`, each page of a part gets its own direct `/Annots` array.
+  - Ruled out (a), positions lost in remapping:
+    - the user set 3 per-page positions, all on pages 1–75;
+    - part 1 shows exactly 3 non-default Rects;
+    - parts 2–8 use the default position, as expected;
+    - the remapping (`indice - inicio`) is correct and covered by tests.
+  - Ruled out (b), boxes changed by the split:
+    - for all 597 pages, the inherited MediaBox, CropBox, Rotate and UserUnit are identical in the source and in the parts;
+    - pypdf flattens inherited attributes into each page.
+  - Page sizes per part (from the sweep):
+    - part 1: A4 39, Letter 36;
+    - part 2: A4 74, A3 landscape (rot 90) 1;
+    - part 3: A4 73, A3 (rot 90) 2;
+    - part 4: A4 44, A3 (rot 270) 30, A3 landscape 1;
+    - part 5: A4 74, A4 (rot 270) 1;
+    - part 6: A4 75;
+    - part 7: A4 39, A4 (rot 270) 25, Letter 11;
+    - part 8: A4 47, A4 (rot 270) 25.
+  - Field sweep result: 45 out-of-view widget Rects, all from the shared `/Annots` arrays on 9 A4 pages of part 4, and 822 stamp image references that do not resolve to an image.
+  - Open product question, not changed: on a rotated page, the relative position applies to the unrotated space. The UI preview and the unsplit path do the same. A default stamp on an A3 page with /Rotate 270 therefore shows inside the page, along its right edge, with sideways text. This matches the module convention.
+  - RED (`tests/test_firma_por_partes.py`):
+    - `test_cada_parte_incrusta_su_propio_logo` → part 2 had no image (`[] == [(300, 200)]`);
+    - `test_tamanos_mezclados_cada_pagina_solo_su_sello_y_dentro_de_su_vista`: A4, A3 portrait and A3 landscape pages, rotated 90/270, across 4 parts, with positions in later parts. Page 1 had 3 widgets, one being the A3 Rect [566.05, 42.43, …].
+    - `test_cajas_heredadas_y_origen_distinto_de_cero_se_conservan_en_las_partes` passed before the fix. It guards inherited MediaBox, CropBox and Rotate, a negative origin and a CropBox intersection.
+  - GREEN:
+    - `python -m pytest -q` → 399 passed (396 + 3), with no access violation;
+    - `node --check ui/app.js` → OK.
+  - Smoke (test signer «PRUEBA PRIMERA», real 75-page limit, the user's real 597-page source, with a logo and own positions on pages 2, 80, 262 and 561):
+    - 8 parts in 81 s;
+    - pyHanko: parts 1, 4 and 8, first and last signature → intact, valid, trusted;
+    - sweep: 597 stamps, each resolving to `Image 1269x873` in its own file;
+    - 0 Rects outside the visible box and 0 box differences;
+    - every page has its own direct `/Annots` array with exactly one widget;
+    - the own positions appear in parts 1, 2, 4 and 8.
+  - Build: `build.ps1` → its test run 399 passed; `dist\installer\FirmaPeru-Setup-1.2.7.exe` built.
+  - Commits: `f2fc6f3` (fix + tests), `900d592` (version 1.2.7), plus the docs commit with this record.
+
 ## Acceptance criteria
 
 - With the test signer:
@@ -80,3 +132,4 @@ Field and lab evidence from 2026-11-19:
 
 - 2026-11-19: document created; T1 delegated.
 - 2026-11-19: T1 done (route: delegated writer). 396 passed; 1.2.6 installer built; smoke on the real 569-page source OK. Field check in ReFirma and Acrobat pending (user).
+- 2026-11-19: field run of v1.2.6 on the real 597-page expediente showed the logo missing in parts 2–8 and stamps of A3 pages drawn outside A4 pages. T2 added and done (route: delegated writer): 399 passed; 1.2.7 installer built; real-source smoke and full sweep clean. Field check of 1.2.7 in ReFirma and Acrobat pending (user).
