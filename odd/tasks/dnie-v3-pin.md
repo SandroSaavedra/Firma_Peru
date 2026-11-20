@@ -102,3 +102,7 @@ DNIe V1/V2 (CJCOP3, ciamd.dll) is not affected: one PIN works there.
   - `app._puede_ser_dnie_v3()` checks the WinSCard card names and skips PKCS#11 only when every inserted card is known and none is «Peru eID». If the names are unknown or the query fails, PKCS#11 is tried.
   - With the real V2 card: «no es un DNIe 3.0 ('CJCOP3')» in 0.01 s.
   - RED: errors (no `_recolectar_hechos`). GREEN: 372 passed.
+- 2026-11-20 (coordinator, inline): field regression of the check above.
+  - A DNIe 3.0 on another machine is registered as «Peru DNIe Device». The allowlist («Peru eID») classified it as non-3.0, skipped PKCS#11 and fell back to CNG, so Windows asked for the PIN on every page (75 prompts per part, logs of 2026-11-19 19:36 and 2026-11-20 10:00).
+  - Fix: invert the check into a denylist. `TARJETAS_NO_DNIE_V3 = ("cjcop3",)`; PKCS#11 is skipped only when every inserted card is a known V1/V2. Any other name tries PKCS#11, which costs a few seconds at most instead of a PIN per page.
+  - RED: `test_dnie_v3_con_otro_nombre_de_tarjeta_firma_con_un_solo_pin` failed. GREEN: 400 passed.

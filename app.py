@@ -1640,16 +1640,19 @@ class Api:
 # Punto de prueba: las pruebas reemplazan la consulta a WinSCard.
 _recolectar_hechos = diagnostico_dnie.recolectar_hechos
 
-# Nombre que registra el driver V3.0 de RENIEC (IDEMIA IDplug) para el ATR del DNIe 3.0.
-TARJETA_DNIE_V3 = "peru eid"
+# Card names that WinSCard reports for DNIe models the IDEMIA module does not
+# handle (V1/V2). The DNIe 3.0 name depends on the installed driver («Peru eID
+# Device», «Peru DNIe Device», ...), so only known non-3.0 names skip PKCS#11.
+TARJETAS_NO_DNIE_V3 = ("cjcop3",)
 
 
 def _puede_ser_dnie_v3() -> bool:
     """
-    False solo si WinSCard dice con certeza que ninguna tarjeta insertada es un
-    DNIe 3.0 (por ejemplo, un DNIe V1/V2 «CJCOP3»): así no se pierden segundos
-    cargando el módulo de IDEMIA, que no reconoce esos DNIe. Si el modelo es
-    desconocido o la consulta falla, True: se prueba PKCS#11 como siempre.
+    False solo si WinSCard dice con certeza que toda tarjeta insertada es un
+    DNIe V1/V2 conocido («CJCOP3»): así no se pierden segundos cargando el
+    módulo de IDEMIA, que no reconoce esos DNIe. Cualquier otro nombre, un
+    modelo desconocido o una consulta fallida dan True: se prueba PKCS#11,
+    porque perderlo con un DNIe 3.0 obliga a un PIN por página.
     """
     try:
         lectores = _recolectar_hechos().get("lectores")
@@ -1659,7 +1662,7 @@ def _puede_ser_dnie_v3() -> bool:
     tarjetas = [l.tarjeta for l in lectores or [] if l.estado & diagnostico_dnie.SCARD_STATE_PRESENT]
     if not tarjetas or any(t is None for t in tarjetas):
         return True
-    if any(TARJETA_DNIE_V3 in t.lower() for t in tarjetas):
+    if not all(any(nombre in t.lower() for nombre in TARJETAS_NO_DNIE_V3) for t in tarjetas):
         return True
     logger.info(
         "PKCS#11: la tarjeta insertada no es un DNIe 3.0 (%s); se usa CNG sin cargar el módulo de IDEMIA.",

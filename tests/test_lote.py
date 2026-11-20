@@ -838,6 +838,15 @@ def test_modelo_de_tarjeta_desconocido_prueba_pkcs11(api, cng, dnie_v3, tmp_path
     assert dnie_v3.cargas > 0 and cng.firmas == []  # firmó por PKCS#11
 
 
+def test_dnie_v3_con_otro_nombre_de_tarjeta_firma_con_un_solo_pin(api, cng, dnie_v3, tmp_path, monkeypatch):
+    """Field case: a DNIe 3.0 registered as «Peru DNIe Device» must still use PKCS#11, not a PIN per page."""
+    monkeypatch.setattr(app, "_recolectar_hechos", lambda: _hechos("Peru DNIe Device"))
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=3)
+    api.abrir_ruta(str(ruta))
+    assert api.firmar({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})["ok"]
+    assert dnie_v3.cargas > 0 and cng.firmas == []  # signed through PKCS#11
+
+
 def test_si_winscard_falla_se_prueba_pkcs11(api, cng, dnie_v3, tmp_path, monkeypatch):
     def _falla():
         raise OSError("winscard")
