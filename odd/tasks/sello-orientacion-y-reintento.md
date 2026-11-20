@@ -89,3 +89,4 @@
   - README "Páginas rotadas": the preview shows the stamp as it will be signed and dragging stores frame positions.
   - RED: `python -m pytest -q tests/test_ui_paridad.py` 10 errors (FileNotFoundError: `ui/geometria.js`). GREEN: same command 12 passed; `python -m pytest -q` 485 passed; `node --check` on `.mjs` copies of `ui/app.js` and `ui/geometria.js` OK.
   - Known residual differences: Python rounds an odd multiple of 45° /Rotate with banker's rounding and JS with `Math.round` (invalid /Rotate values only); the preview's font fitting remains an approximation of pyHanko's text layout (pre-existing).
+  - Commit `dcaa2f0`. Parent re-run: 485 passed; `firmador.spec` bundles the whole `ui` folder, so `ui/geometria.js` ships in the installer. Not run: a visual check in the real app window (pending, by the user).
