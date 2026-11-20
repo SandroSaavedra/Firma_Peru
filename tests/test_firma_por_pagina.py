@@ -95,7 +95,7 @@ def test_cada_pagina_pone_una_firma_real_en_cada_pagina(tmp_path, pdf_multipagin
     for indice, vista in enumerate(VISTAS):
         (campo,) = por_pagina[indice]
         assert campo["/T"] == resultado.campos[indice]
-        esperado = firma_pdf.rect_sello(propia if indice == 1 else posicion, vista, "firma")
+        esperado = firma_pdf.rect_sello(propia if indice == 1 else posicion, vista, "firma", rotacion=0)
         assert _rect(campo) == pytest.approx(esperado, abs=0.01)
         assert "/N" in campo["/AP"]  # sello visible propio
         # sin los /Stamp + /Link del modo «todas»
@@ -179,7 +179,9 @@ def test_segundo_firmante_cada_pagina_mantiene_validas_todas_las_anteriores(
     for indice, vista in enumerate(VISTAS):
         primero, segundo = por_pagina[indice]
         assert segundo["/T"] == resultado.campos[indice]
-        esperado = firma_pdf.rect_sello(firma_pdf.posicion_predeterminada("visto_bueno"), vista, "visto_bueno")
+        esperado = firma_pdf.rect_sello(
+            firma_pdf.posicion_predeterminada("visto_bueno"), vista, "visto_bueno", rotacion=0
+        )
         assert _rect(segundo) == pytest.approx(esperado, abs=0.01)
 
 

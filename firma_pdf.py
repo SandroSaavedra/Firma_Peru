@@ -20,17 +20,25 @@ Convención de coordenadas (la interfaz debe usar la misma):
   - La posición del sello (su esquina inferior izquierda) se expresa en
     FRACCIONES (0..1) de la "vista" de la página: la intersección de /CropBox
     y /MediaBox (lo mismo que `page.view` en pdf.js). Origen abajo a la
-    izquierda, espacio PDF SIN ROTAR.
+    izquierda, espacio PDF SIN ROTAR (for θ = 0; otherwise the layout frame,
+    see "Displayed orientation" below).
   - Cada página puede tener su propia posición (`posiciones_paginas`); las
     demás usan la del documento. Cambia solo el /Rect del sello (widget del
     campo en la página de firma, /Stamp + /Link en las demás).
   - El tamaño del sello es fijo por tipo y en puntos PDF (TAMANOS_SELLO): mide
     lo mismo en cualquier tamaño de página. Si en la posición pedida no cabe,
     se desplaza hasta quedar dentro de la página.
-  - En páginas con /Rotate distinto de 0 el sello se ubica en el lugar correcto
-    (si la interfaz convierte con `viewport.convertToPdfPoint`), pero el texto
-    del sello se dibuja con la orientación del espacio sin rotar, es decir,
-    girado junto con la página.
+  - Displayed orientation: each page has a layout frame rotation θ
+    (`giro_de_sello`). A page displayed in portrait is laid out as if stored
+    with /Rotate 0, one displayed in landscape as if stored with /Rotate 270:
+    horizontal stamp at the bottom right of portrait pages, vertical stamp on
+    the right margin of landscape pages. Positions (automatic, per document
+    and hand-placed per page) are fractions of that FRAME; for θ = 0 the frame
+    is the unrotated view, so the historical rule above is unchanged. The
+    rect is mapped back to unrotated space (`rect_sello(..., rotacion=r)`)
+    and the appearance is turned by θ with a /Matrix (`EstiloSello`,
+    `_apariencia_girada`). `fraccion_en_marco` / `fraccion_sin_rotar` convert
+    between unrotated and frame fractions (the UI mirrors them).
 
 PDF que ya tienen firmas: la nueva firma se agrega en una revisión
 incremental con su propio campo y, con `paginas="todas"`, sus propios
@@ -95,7 +103,7 @@ from typing import Callable, Literal
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import ArrayObject, NameObject
 from pyhanko.pdf_utils import generic
-from pyhanko.pdf_utils.content import RawContent
+from pyhanko.pdf_utils.content import AppearanceContent, RawContent
 from pyhanko.pdf_utils.font import FontEngineFactory, SimpleFontEngineFactory
 from pyhanko.pdf_utils.generic import pdf_name
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
@@ -253,14 +261,63 @@ class InfoPdf:
     rotaciones: list[int]
 
 
-def rect_sello(posicion: PosicionRelativa, vista, tipo: str) -> tuple[float, float, float, float]:
+def giro_de_sello(vista, rotacion: int) -> int:
     """
-    (x1, y1, x2, y2) en puntos PDF del sello del tipo en la vista dada: la
-    esquina inferior izquierda sale de la posición relativa y el tamaño es el
-    fijo del tipo (TAMANOS_SELLO). Si en esa posición no cabe, se desplaza
-    hasta quedar dentro de la vista (en una página más chica que el sello
-    queda pegado a su esquina inferior izquierda).
+    Layout frame rotation θ (0, 90, 180 or 270) of the stamp on a page with
+    this view and /Rotate. A page displayed in portrait is laid out as if it
+    were stored with /Rotate 0 (θ = r); one displayed in landscape as if it
+    were stored with /Rotate 270 (θ = r + 90). Result: a horizontal stamp at
+    the bottom right of portrait pages and a vertical one on the right margin
+    of landscape pages, whatever their stored rotation. θ = 0 is the
+    historical layout (the stamp in the page's unrotated space).
     """
+    ancho, alto = vista[2] - vista[0], vista[3] - vista[1]
+    r = round((rotacion or 0) / 90) * 90 % 360
+    ancho_visto, alto_visto = (ancho, alto) if r in (0, 180) else (alto, ancho)
+    return r if alto_visto >= ancho_visto else (r + 90) % 360
+
+
+def fraccion_en_marco(x: float, y: float, giro: int) -> tuple[float, float]:
+    """
+    Point in fractions of the unrotated view -> fractions of the layout frame
+    of rotation `giro` (the page as displayed with /Rotate `giro`). The page
+    size is not needed: the mapping of fractions only depends on θ. The UI
+    (app.js) mirrors it.
+    """
+    if giro == 90:
+        return y, 1 - x
+    if giro == 180:
+        return 1 - x, 1 - y
+    if giro == 270:
+        return 1 - y, x
+    return x, y
+
+
+def fraccion_sin_rotar(u: float, v: float, giro: int) -> tuple[float, float]:
+    """Inverse of `fraccion_en_marco`: frame fractions -> fractions of the unrotated view."""
+    if giro == 90:
+        return 1 - v, u
+    if giro == 180:
+        return 1 - u, 1 - v
+    if giro == 270:
+        return v, 1 - u
+    return u, v
+
+
+def _desde_marco(u: float, v: float, vista, giro: int) -> tuple[float, float]:
+    """Point of the layout frame (pt, origin bottom left) -> point of the unrotated view."""
+    x0, y0, x1, y1 = vista
+    if giro == 90:
+        return x1 - v, y0 + u
+    if giro == 180:
+        return x1 - u, y1 - v
+    if giro == 270:
+        return x0 + v, y1 - u
+    return x0 + u, y0 + v
+
+
+def _rect_en_vista(posicion: PosicionRelativa, vista, tipo: str) -> tuple[float, float, float, float]:
+    """Stamp rect in `vista` with no rotation (the historical rule; see `rect_sello`)."""
     if not all(-_TOLERANCIA <= v <= 1 + _TOLERANCIA for v in (posicion.x, posicion.y)):
         raise ErrorFirma("La posición del sello está fuera de la página.")
     ancho, alto = TAMANOS_SELLO[tipo]
@@ -268,6 +325,38 @@ def rect_sello(posicion: PosicionRelativa, vista, tipo: str) -> tuple[float, flo
     x = max(x0, min(x0 + posicion.x * (x1 - x0), x1 - ancho))
     y = max(y0, min(y0 + posicion.y * (y1 - y0), y1 - alto))
     return x, y, x + ancho, y + alto
+
+
+def _rect_girado(posicion: PosicionRelativa, vista, tipo: str, giro: int) -> tuple[float, float, float, float]:
+    """
+    Stamp rect in unrotated space for layout frame rotation `giro`: the
+    historical rule applied in the frame (`posicion` in frame fractions), then
+    mapped back. With θ = 90 or 270 the rect's width and height swap.
+    """
+    if giro == 0:
+        return _rect_en_vista(posicion, vista, tipo)
+    ancho, alto = vista[2] - vista[0], vista[3] - vista[1]
+    marco = (0, 0, ancho, alto) if giro == 180 else (0, 0, alto, ancho)
+    u0, v0, u1, v1 = _rect_en_vista(posicion, marco, tipo)
+    (xa, ya), (xb, yb) = _desde_marco(u0, v0, vista, giro), _desde_marco(u1, v1, vista, giro)
+    return min(xa, xb), min(ya, yb), max(xa, xb), max(ya, yb)
+
+
+def rect_sello(posicion: PosicionRelativa, vista, tipo: str, rotacion: int | None = None) -> tuple[float, float, float, float]:
+    """
+    (x1, y1, x2, y2) en puntos PDF (espacio sin rotar) del sello del tipo en
+    la vista dada: la esquina inferior izquierda sale de la posición relativa
+    y el tamaño es el fijo del tipo (TAMANOS_SELLO). Si en esa posición no
+    cabe, se desplaza hasta quedar dentro de la vista (en una página más chica
+    que el sello queda pegado a su esquina inferior izquierda).
+
+    With `rotacion` (the page's /Rotate) the displayed-orientation rule
+    applies: the position is in fractions of the layout frame
+    (`giro_de_sello`) and the rect is mapped back to unrotated space. Without
+    it, the frame is the unrotated view (θ = 0, the historical rule).
+    """
+    giro = 0 if rotacion is None else giro_de_sello(vista, rotacion)
+    return _rect_girado(posicion, vista, tipo, giro)
 
 
 def _validar_posiciones_paginas(posiciones, total: int) -> dict[int, PosicionRelativa]:
@@ -323,6 +412,17 @@ def vista_de_pagina(handler, indice) -> tuple[float, float, float, float]:
 def _rotacion(handler, indice) -> int:
     valor = find_inherited_value_in_tree(_pagina(handler, indice), "/Rotate", "/Parent")
     return int(valor or 0) % 360
+
+
+def _sello_de_pagina(handler, indice, posicion: PosicionRelativa, tipo: str):
+    """
+    (rect in unrotated space, θ) of the stamp on page `indice`, by the page's
+    displayed orientation (`giro_de_sello`). Every position, automatic or
+    hand-placed (per page or per document), is in frame fractions.
+    """
+    vista = vista_de_pagina(handler, indice)
+    giro = giro_de_sello(vista, _rotacion(handler, indice))
+    return _rect_girado(posicion, vista, tipo, giro), giro
 
 
 def _total_paginas(handler) -> int:
@@ -664,9 +764,66 @@ def _margenes(rect: Rect, ancho: float, alto: float) -> Margins:
     return Margins(left=rect[0], right=ancho - rect[2], bottom=rect[1], top=alto - rect[3])
 
 
+def _matriz_giro(giro: int, ancho: float, alto: float) -> generic.ArrayObject:
+    """
+    /Matrix that turns a form XObject with a `ancho` x `alto` /BBox by `giro`
+    degrees counterclockwise and moves it back to the origin: the turned box
+    covers (0, 0)..(alto, ancho) for 90 and 270, (0, 0)..(ancho, alto) for 0
+    and 180. Viewers fit that box into the annotation's /Rect.
+    """
+    valores = {
+        0: (1, 0, 0, 1, 0, 0),
+        90: (0, 1, -1, 0, alto, 0),
+        180: (-1, 0, 0, -1, ancho, alto),
+        270: (0, -1, 1, 0, 0, ancho),
+    }[giro]
+    return generic.ArrayObject(generic.FloatObject(v) for v in valores)
+
+
+class _AparienciaGirada(AppearanceContent):
+    """
+    Signature appearance turned by θ: the same form XObject pyHanko draws for
+    the upright `ancho` x `alto` stamp, plus a /Matrix (`_matriz_giro`). The
+    widget's /Rect is the turned footprint (`alto` x `ancho` for 90 and 270),
+    so the stamp shows upright in the layout frame.
+    """
+
+    def __init__(self, interna: AppearanceContent, giro: int):
+        ancho, alto = interna.box.width, interna.box.height
+        caja = BoxConstraints(width=alto, height=ancho) if giro in (90, 270) else BoxConstraints(width=ancho, height=alto)
+        super().__init__(writer=interna.writer, box=caja)
+        self._interna = interna
+        self._giro = giro
+
+    def as_form_xobject(self):
+        xobjeto = self._interna.as_form_xobject()
+        caja = self._interna.box
+        xobjeto[pdf_name("/Matrix")] = _matriz_giro(self._giro, caja.width, caja.height)
+        return xobjeto
+
+
+@dataclass(frozen=True)
+class EstiloSello(TextStampStyle):
+    """
+    TextStampStyle with a layout frame rotation `giro` (θ). θ = 0 is exactly
+    pyHanko's TextStampStyle. With another θ the widget's /Rect is the turned
+    footprint: the stamp is laid out in the upright box and its appearance
+    gets a /Matrix (`_AparienciaGirada`).
+    """
+
+    giro: int = 0
+
+    def create_stamp(self, writer, box: BoxConstraints, text_params: dict):
+        if not self.giro:
+            return super().create_stamp(writer, box, text_params)
+        if self.giro in (90, 270):
+            box = BoxConstraints(width=box.height, height=box.width)
+        return _AparienciaGirada(super().create_stamp(writer, box, text_params), self.giro)
+
+
 def estilo_sello(
     tipo: str, ancho: float, alto: float, texto: str, fecha_muestra: str, imagen=None
-) -> TextStampStyle:
+) -> EstiloSello:
     """
     Estilo pyHanko del sello para una caja de `ancho` x `alto` pt. `texto` ya
     tiene sustituidos firmante, motivo y lugar, y conserva `%(ts)s` para que
@@ -699,7 +856,7 @@ def estilo_sello(
                 inner_content_scaling=InnerScaling.STRETCH_TO_FIT,
             ),
         }
-    return TextStampStyle(
+    return EstiloSello(
         stamp_text=literal,
         timestamp_format=FORMATOS_FECHA[tipo],
         border_width=0,
@@ -803,6 +960,28 @@ def script_estado_firma(campo: str, pagina_firma: int) -> str:
     return _SCRIPT_ESTADO_FIRMA.replace("__CAMPO__", json.dumps(campo)).replace("__PAGINA__", str(pagina_firma + 1))
 
 
+def _apariencia_girada(writer, apariencia, giro: int, ancho: float, alto: float) -> generic.IndirectObject:
+    """
+    Form XObject that draws the form XObject `apariencia` (whose footprint is
+    `ancho` x `alto`, already turned by its own /Matrix if any) turned `giro`
+    degrees counterclockwise. Used by the /Stamp of pages whose θ differs from
+    the field page's θ; the field appearance itself is never redrawn.
+    """
+    envoltura = generic.StreamObject(
+        {
+            pdf_name("/Type"): pdf_name("/XObject"),
+            pdf_name("/Subtype"): pdf_name("/Form"),
+            pdf_name("/BBox"): generic.ArrayObject(generic.FloatObject(v) for v in (0, 0, ancho, alto)),
+            pdf_name("/Matrix"): _matriz_giro(giro, ancho, alto),
+            pdf_name("/Resources"): generic.DictionaryObject(
+                {pdf_name("/XObject"): generic.DictionaryObject({pdf_name("/Sello"): apariencia})}
+            ),
+        },
+        stream_data=b"/Sello Do",
+    )
+    return writer.add_object(envoltura)
+
+
 def _agregar_sellos(writer, campo: str, firmante: str, paginas, pagina_firma: int, posicion_de, tipo: str):
     """
     Sella las páginas de `paginas` distintas de `pagina_firma` (donde ya está
@@ -816,9 +995,19 @@ def _agregar_sellos(writer, campo: str, firmante: str, paginas, pagina_firma: in
     El /Rect sale de `posicion_de(índice)`; el tamaño es el fijo del tipo.
     Un campo de firma con varios widgets hace que Acrobat dé por modificada la
     firma en cuanto se agrega otra firma; estas anotaciones no.
+
+    Each page follows its own displayed orientation (θ, `giro_de_sello`). A
+    page whose θ differs from the field page's θ shows the field appearance
+    through a small wrapper form XObject that turns it by the difference
+    (`_apariencia_girada`); one wrapper per difference, shared by all pages.
     """
     ((_, _, campo_ref),) = fields.enumerate_sig_fields(writer, with_name=campo)
     apariencia = campo_ref.get_object()["/AP"].raw_get("/N")
+    _, giro_campo = _sello_de_pagina(writer, pagina_firma, posicion_de(pagina_firma), tipo)
+    ancho, alto = TAMANOS_SELLO[tipo]
+    if giro_campo in (90, 270):
+        ancho, alto = alto, ancho  # footprint of the field appearance
+    apariencias = {0: apariencia}
     script = script_estado_firma(campo, pagina_firma)
     descripcion = (
         f"Sello de la firma digital «{campo}» de {firmante}. "
@@ -827,7 +1016,11 @@ def _agregar_sellos(writer, campo: str, firmante: str, paginas, pagina_firma: in
     for indice in paginas:
         if indice == pagina_firma:
             continue
-        rect = [round(v, 4) for v in rect_sello(posicion_de(indice), vista_de_pagina(writer, indice), tipo)]
+        rect, giro = _sello_de_pagina(writer, indice, posicion_de(indice), tipo)
+        rect = [round(v, 4) for v in rect]
+        diferencia = (giro - giro_campo) % 360
+        if diferencia not in apariencias:
+            apariencias[diferencia] = _apariencia_girada(writer, apariencia, diferencia, ancho, alto)
         pagina_ref = writer.find_page_for_modification(indice)[0]
         sello = generic.DictionaryObject(
             {
@@ -838,7 +1031,7 @@ def _agregar_sellos(writer, campo: str, firmante: str, paginas, pagina_firma: in
                 pdf_name("/P"): pagina_ref,
                 pdf_name("/Name"): pdf_name("/FirmaDigital"),
                 pdf_name("/Contents"): generic.TextStringObject(descripcion),
-                pdf_name("/AP"): generic.DictionaryObject({pdf_name("/N"): apariencia}),
+                pdf_name("/AP"): generic.DictionaryObject({pdf_name("/N"): apariencias[diferencia]}),
             }
         )
         enlace = generic.DictionaryObject(
@@ -1057,8 +1250,10 @@ def firmar_pdf(
     fecha = fecha_sello(tipo, datetime.now().astimezone())
     posicion = opciones.posicion or posicion_predeterminada(tipo)
     estilo = estilo_sello(tipo, *TAMANOS_SELLO[tipo], texto, fecha, imagen)
+    # One style per layout frame rotation θ (the same text, date and image).
+    estilos = {0: estilo}
 
-    def firmador_pdf(campo: str) -> signers.PdfSigner:
+    def firmador_pdf(campo: str, giro: int = 0) -> signers.PdfSigner:
         meta = signers.PdfSignatureMetadata(
             field_name=campo,
             md_algorithm="sha256",
@@ -1066,7 +1261,9 @@ def firmar_pdf(
             reason=motivo,
             location=lugar or None,
         )
-        return signers.PdfSigner(meta, signer=signer, stamp_style=estilo)
+        if giro not in estilos:
+            estilos[giro] = replace(estilo, giro=giro)
+        return signers.PdfSigner(meta, signer=signer, stamp_style=estilos[giro])
 
     if opciones.paginas == "cada_pagina":
         return _firmar_cada_pagina(entrada, salida, opciones, posicion, firmador_pdf, progreso)
@@ -1077,6 +1274,8 @@ def firmar_pdf(
         pagina_firma = doc.pagina_firma
 
         def posicion_de(indice: int) -> PosicionRelativa:
+            # Hand-placed (per page) or per-document position, in fractions of
+            # the page's layout frame (`giro_de_sello`), like the automatic one.
             return doc.posiciones_paginas.get(indice, posicion)
 
         paginas = [pagina_firma]
@@ -1088,13 +1287,13 @@ def firmar_pdf(
             paginas = list(range(doc.total))
 
         campo = _nombre_campo_libre(writer, opciones.nombre_campo)
-        caja_campo = rect_sello(posicion_de(pagina_firma), vista_de_pagina(writer, pagina_firma), tipo)
+        caja_campo, giro_campo = _sello_de_pagina(writer, pagina_firma, posicion_de(pagina_firma), tipo)
         # Campo y widget en un mismo diccionario (sin /Kids): un solo widget.
         fields.append_signature_field(
             writer, fields.SigFieldSpec(sig_field_name=campo, on_page=pagina_firma, box=caja_campo)
         )
 
-        pdf_signer = firmador_pdf(campo)
+        pdf_signer = firmador_pdf(campo, giro_campo)
         buffer = io.BytesIO()
         if sellos_extra:
 
@@ -1134,11 +1333,11 @@ def _firmar_paginas(flujo, writer, doc, opciones, posicion, firmador_pdf, al_fir
             writer = _abrir_para_firmar(flujo)
         campo = _nombre_libre(existentes, opciones.nombre_campo)
         existentes.add(campo)
-        caja = rect_sello(
-            doc.posiciones_paginas.get(indice, posicion), vista_de_pagina(writer, indice), opciones.tipo
-        )
+        # Per-page hand-placed positions and the document position are both
+        # frame fractions: the stamp follows the page's displayed orientation.
+        caja, giro = _sello_de_pagina(writer, indice, doc.posiciones_paginas.get(indice, posicion), opciones.tipo)
         fields.append_signature_field(writer, fields.SigFieldSpec(sig_field_name=campo, on_page=indice, box=caja))
-        firmador_pdf(campo).sign_pdf(writer, in_place=True)
+        firmador_pdf(campo, giro).sign_pdf(writer, in_place=True)
         campos.append(campo)
         al_firmar(indice + 1)
     return campos

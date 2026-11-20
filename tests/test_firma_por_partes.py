@@ -423,7 +423,7 @@ def test_tamanos_mezclados_cada_pagina_solo_su_sello_y_dentro_de_su_vista(tmp_pa
             assert len(anots) == 1, (ruta, local, [_rect(a) for a in anots])
             (campo,) = por_pagina[local]
             assert anots[0]["/T"] == campo["/T"]
-            esperado = firma_pdf.rect_sello(propias.get(original, posicion), vista, "firma")
+            esperado = firma_pdf.rect_sello(propias.get(original, posicion), vista, "firma", rotacion=spec.get("rotacion", 0))
             assert _rect(campo) == pytest.approx(esperado, abs=0.01), (ruta, local)
             assert _dentro(_rect(campo), vista), (ruta, local)
         assert len(_validas_con_app(ruta, material_prueba)) == len(anotaciones)
@@ -470,6 +470,6 @@ def test_cajas_heredadas_y_origen_distinto_de_cero_se_conservan_en_las_partes(tm
             vista = tuple(float(v) for v in firma_pdf.vista_de_pagina(reader, local))
             assert vista == pytest.approx(vistas[original]), (ruta, local)
             assert firma_pdf._rotacion(reader, local) == rotaciones[original], (ruta, local)
-            esperado = firma_pdf.rect_sello(propias.get(original, posicion), vistas[original], "firma")
+            esperado = firma_pdf.rect_sello(propias.get(original, posicion), vistas[original], "firma", rotacion=rotaciones[original])
             assert _rect(campo) == pytest.approx(esperado, abs=0.01), (ruta, local)
             assert _dentro(_rect(campo), vista), (ruta, local)

@@ -650,9 +650,11 @@ def test_firmar_usa_la_posicion_propia_de_cada_pagina(api, pdf_multipagina):
         }
     )
     assert r["ok"], r
+    # Page 1 (landscape Letter, /Rotate 0) is displayed landscape (θ = 90): the
+    # hand-placed position is in frame coordinates and the stamp is vertical.
     assert _rects_por_pagina(r["salida"]) == [
         (59.5, 84.2, 219.5, 124.2),
-        (396.0, 306.0, 556.0, 346.0),
+        (356.0, 306.0, 396.0, 466.0),
         (119.0, 673.6, 279.0, 713.6),
     ]
     assert len(api.validar(r["salida"])["firmas"]) == 1
@@ -672,7 +674,9 @@ def test_posiciones_por_pagina_mal_formadas_se_ignoran(api, pdf_multipagina):
         r = api.firmar({"paginas": "todas", "tipo": "firma", "caja": {"x": 0.1, "y": 0.1}, "posiciones_paginas": posiciones})
         assert r["ok"], r
         a4 = (59.5, 84.2, 219.5, 124.2)
-        assert _rects_por_pagina(r["salida"]) == [a4, (79.2, 61.2, 239.2, 101.2), a4]
+        # Page 1 is displayed landscape (θ = 90): the document position is in frame
+        # coordinates and the stamp is vertical on the right margin.
+        assert _rects_por_pagina(r["salida"]) == [a4, (672.8, 61.2, 712.8, 221.2), a4]
         Path(r["salida"]).unlink()
 
 

@@ -35,14 +35,14 @@
 ## Constraints
 
 - Never retry or resend the PIN after a PIN error (`CODIGOS_PIN_PKCS11`, `es_error_de_pin`).
-- A position the user placed by hand (`posiciones_paginas`, per-document `caja`) keeps priority over the automatic layout.
+- A hand-placed position keeps priority and follows the same displayed-orientation rule (frame coordinates).
 - Generated artifacts in English; user-facing UI copy in Spanish (existing project language).
 
 ## Tasks
 
 - [x] T1 PKCS#11 signature retry: up to 2 retries with about 1 s backoff on `CKR_GENERAL_ERROR` (0x5), `CKR_DEVICE_ERROR` (0x30), and `CKR_FUNCTION_FAILED` (0x6). Each retry redoes C_SignInit, the context login, and C_Sign. No retry on PIN errors. Each retry is logged. Route: inline (one source file plus its tests).
 - [x] T2 Batch resilience: a document that fails with a transient card error goes back to the end of the queue once. The UI shows "reintentando" live. Fix the "firmas en la sesión CNG" label. Route: inline or delegated, depending on the UI size.
-- [ ] T3 Stamp by displayed orientation in `firma_pdf.py`: classify each page from its view box and `/Rotate`, choose the default position (portrait: bottom right; landscape: right margin, vertical), and draw a rotated box and appearance that compensate `/Rotate`. Route: delegated writer (2+ non-trivial files with tests).
+- [x] T3 Stamp by displayed orientation in `firma_pdf.py`: classify each page from its view box and `/Rotate`, choose the default position (portrait: bottom right; landscape: right margin, vertical), and draw a rotated box and appearance that compensate `/Rotate`. Route: delegated writer (2+ non-trivial files with tests).
 - [ ] T4 UI preview of the automatic layout per page (`rectPdf`, `cajaDePagina`, `ajustarTextoSello`). Route: delegated writer.
 - [ ] T5 Version bump, build (direct steps, see the build memory), release (ask before push).
 
@@ -71,3 +71,13 @@
   - `_firmar_lote` iterates a `trabajo` list. A document that fails with `_es_error_transitorio_de_tarjeta` (`ErrorPkcs11` with an rv in `CODIGOS_TRANSITORIOS`, i.e. after the in-place retries) is marked `pendiente` with `MENSAJE_REINTENTO_AL_FINAL`, emitted live, and appended once to the end. A second failure is a normal error.
   - The batch summary log names the real session (`PKCS#11` or `CNG`) instead of always "CNG".
   - RED: 2 failed. GREEN: 408 passed.
+- 2026-11-20 T3 done (Route: delegated writer (writer trigger: firma_pdf.py + tests, research on pyHanko appearance rotation)).
+  - `giro_de_sello(vista, rotacion)` gives the layout frame rotation θ: displayed portrait → θ = r; displayed landscape → θ = (r + 90) % 360. θ = 0 keeps the historical geometry and appearance byte-for-byte (no /Matrix).
+  - `rect_sello(pos, vista, tipo, rotacion=None)`: with `rotacion` the historical rule runs in the frame (fw, fh) and the rect is mapped back to unrotated space (90/270 swap width and height); without it, θ = 0. Every position (automatic, per-document `caja`, hand-placed `posiciones_paginas`) is a frame fraction (user decision, changes spec item 4). Pure helpers `fraccion_en_marco` / `fraccion_sin_rotar` (fractions only depend on θ) for T4 to mirror in JS.
+  - Appearance: `EstiloSello(TextStampStyle)` with a `giro` field; for θ ≠ 0 `create_stamp` lays out the upright box and returns `_AparienciaGirada`, the same form XObject plus a /Matrix (`_matriz_giro`, counterclockwise by θ, moved back to the origin). One style per θ per signing call. Content stamps (`_agregar_sellos`, "todas") reuse the field appearance; a page whose θ differs from the field page's gets a wrapper form XObject (`_apariencia_girada`, `/Sello Do` + /Matrix) cached per θ difference: at most 4 appearances per document.
+  - Call sites: `firmar_pdf` (field box and `firmador_pdf(campo, giro)`), `_agregar_sellos`, `_firmar_paginas` (also used by `_firmar_por_partes`). `app.py` needed no change (it already sends `vistas` and `rotaciones`).
+  - New tests `tests/test_sello_orientacion.py` (65): θ per class, fraction helpers both ways, rects in unrotated space, θ = 0 unchanged, pypdfium2 renders (ink box in the expected displayed rect, horizontal vs vertical, red logo left of / below the text so a wrong turn fails) for cada_pagina, partes, todas (field on θ 90, 0 and 270 pages), ultima, hand-placed positions on A4 /Rotate 270 and A3 landscape /Rotate 0, every signature `intacta`, second "todas" signature keeps the first valid (ANNOTATIONS). A mutant that flips the 90° matrix fails 6 tests.
+  - Changed by design (the landscape-displayed Letter page and rotated pages now take the frame layout; only expected rects/sizes changed): `tests/test_firma_pdf.py` (`_sellos_de` also accepts the rotation wrapper; 8 tests pass `rotacion=` or expect the turned 40 x 160 footprint; `test_pagina_rotada_usa_coordenadas_sin_rotar` became `test_pagina_rotada_sigue_su_orientacion_mostrada`), `tests/test_firma_por_partes.py` (`test_tamanos_mezclados_cada_pagina_solo_su_sello_y_dentro_de_su_vista`, `test_cajas_heredadas_y_origen_distinto_de_cero_se_conservan_en_las_partes`: pass each page's rotation), `tests/test_firma_por_pagina.py` (`test_cada_pagina_pone_una_firma_real_en_cada_pagina`, `test_segundo_firmante_cada_pagina_mantiene_validas_todas_las_anteriores`: `rotacion=0`), `tests/test_app.py` (`test_firmar_usa_la_posicion_propia_de_cada_pagina`, `test_posiciones_por_pagina_mal_formadas_se_ignoran`: new literal rects for the θ = 90 page).
+  - README "Páginas rotadas" rewritten for the new rule.
+  - RED: 64 failed, 1 passed (no `giro_de_sello` / `rect_sello(rotacion=)`). GREEN: `python -m pytest -q` 473 passed.
+  - Next: T4 must mirror `giro_de_sello`, the frame mapping and the turned preview in `ui/app.js`; until then the UI preview of landscape-displayed or rotated pages does not match the signed result, and hand-placed positions on θ ≠ 0 pages are sent in unrotated fractions.

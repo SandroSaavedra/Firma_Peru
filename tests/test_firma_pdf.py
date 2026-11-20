@@ -76,10 +76,23 @@ def _rect(anot):
     return tuple(float(v) for v in anot["/Rect"])
 
 
+def _muestra(apariencia_sello, apariencia):
+    """
+    The /Stamp appearance is the field appearance itself or, on a page whose
+    layout frame rotation differs from the field page's, a wrapper form
+    XObject that draws it turned (`firma_pdf._apariencia_girada`).
+    """
+    if apariencia_sello.reference == apariencia:
+        return True
+    envoltura = apariencia_sello.get_object()
+    sello = envoltura.get("/Resources", {}).get("/XObject", {}).raw_get("/Sello") if "/Matrix" in envoltura else None
+    return sello is not None and sello.reference == apariencia
+
+
 def _sellos_de(reader, indice, campo):
     """Anotaciones /Stamp de la página que muestran la apariencia del campo de firma `campo`."""
     apariencia = _ap_normal(campo).reference
-    return [s for s in _anotaciones(reader, indice, "/Stamp") if _ap_normal(s).reference == apariencia]
+    return [s for s in _anotaciones(reader, indice, "/Stamp") if _muestra(_ap_normal(s), apariencia)]
 
 
 def _rect_del_sello(reader, indice):
@@ -194,11 +207,12 @@ def test_todas_sella_cada_pagina_y_una_sola_firma_pades(tmp_path, pdf_multipagin
     assert not _anotaciones(reader, 2, "/Stamp") and not _anotaciones(reader, 2, "/Link")
     # Las demás páginas: un /Stamp bloqueado con la MISMA apariencia (XObject compartido)
     # y un /Link del mismo tamaño que lleva a la página de firma.
-    for indice, vista in enumerate([A4, CARTA_HORIZONTAL]):
+    # The landscape Letter page (displayed landscape) gets the vertical stamp: same size, turned.
+    for indice, (vista, tamano) in enumerate([(A4, (160, 40)), (CARTA_HORIZONTAL, (40, 160))]):
         assert _widgets_de_firma(reader, indice) == []
-        esperado = firma_pdf.rect_sello(posicion, vista, "firma")
+        esperado = firma_pdf.rect_sello(posicion, vista, "firma", rotacion=0)
         sello, _ = _comprobar_sello_y_enlace(reader, indice, campo_firmado, 2, esperado)
-        assert _tamano(_rect(sello)) == (160, 40)  # mismo tamaño en A4 y en carta
+        assert _tamano(_rect(sello)) == tamano  # mismo tamaño en A4 y en carta
         assert len(_anotaciones(reader, indice, "/Stamp")) == len(_anotaciones(reader, indice, "/Link")) == 1
     for indice in range(3):
         # el sello no se dibuja como contenido de la página
@@ -226,9 +240,11 @@ def test_todas_segunda_firma_mantiene_valida_la_primera(tmp_path, pdf_multipagin
     for indice, vista in enumerate([A4, CARTA_HORIZONTAL]):
         assert _widgets_de_firma(reader, indice) == []
         assert len(_anotaciones(reader, indice, "/Stamp")) == 2
-        esperado = firma_pdf.rect_sello(firma_pdf.posicion_predeterminada("visto_bueno"), vista, "visto_bueno")
+        esperado = firma_pdf.rect_sello(
+            firma_pdf.posicion_predeterminada("visto_bueno"), vista, "visto_bueno", rotacion=0
+        )
         sello, _ = _comprobar_sello_y_enlace(reader, indice, firmas[1].sig_field, 2, esperado)
-        assert _tamano(_rect(sello)) == firma_pdf.TAMANOS_SELLO["visto_bueno"]
+        assert sorted(_tamano(_rect(sello))) == sorted(firma_pdf.TAMANOS_SELLO["visto_bueno"])
 
 
 def _comprobar_firmas_validas(ruta, material_prueba):
@@ -270,7 +286,7 @@ def test_campo_en_otra_pagina_usa_su_vista(tmp_path, pdf_multipagina, firmante):
     assert resultado.pagina_firma == 1
     reader = _leer(salida)
     rect = firma_pdf.rect_sello
-    assert _rect_del_campo(reader, 1) == pytest.approx(rect(posicion, CARTA_HORIZONTAL, "firma"), abs=0.01)
+    assert _rect_del_campo(reader, 1) == pytest.approx(rect(posicion, CARTA_HORIZONTAL, "firma", rotacion=0), abs=0.01)
     campo = reader.embedded_signatures[0].sig_field
     _comprobar_sello_y_enlace(reader, 0, campo, 1, rect(posicion, A4, "firma"))
     _comprobar_sello_y_enlace(reader, 2, campo, 1, rect(posicion, A4, "firma"))
@@ -321,7 +337,7 @@ def test_segunda_firma_no_invalida_la_primera(tmp_path, pdf_multipagina, firmant
     _un_solo_widget(nuevo)
     assert sorted(c["/T"] for _, c in _widgets_de_firma(reader, 2)) == ["FirmaDNIe", resultado.campo]
     for indice, vista in enumerate([A4, CARTA_HORIZONTAL]):
-        esperado = firma_pdf.rect_sello(firma_pdf.posicion_predeterminada("firma"), vista, "firma")
+        esperado = firma_pdf.rect_sello(firma_pdf.posicion_predeterminada("firma"), vista, "firma", rotacion=0)
         for firma in firmas:
             _comprobar_sello_y_enlace(reader, indice, firma.sig_field, 2, esperado)
         assert len(_anotaciones(reader, indice, "/Stamp")) == len(_anotaciones(reader, indice, "/Link")) == 2
@@ -407,12 +423,14 @@ def test_analizar_pdf_reporta_paginas_y_firmas(tmp_path, pdf_multipagina, firman
     assert info.docmdp is None
 
 
-def test_pagina_rotada_usa_coordenadas_sin_rotar(tmp_path, firmante):
+def test_pagina_rotada_sigue_su_orientacion_mostrada(tmp_path, firmante):
+    """An A4 page with /Rotate 90 is displayed landscape: the position is in its layout frame (θ = 180)."""
     entrada = tmp_path / "rotada.pdf"
     entrada.write_bytes(construir_pdf([{"media_box": A4, "rotacion": 90}]))
     posicion = _posicion(0.1, 0.2)
     firmar_pdf(entrada, tmp_path / "s.pdf", firmante, "PRUEBA", OpcionesFirma(posicion=posicion))
-    esperado = firma_pdf.rect_sello(posicion, A4, "firma")
+    assert firma_pdf.giro_de_sello(A4, 90) == 180
+    esperado = firma_pdf.rect_sello(posicion, A4, "firma", rotacion=90)
     assert _rect_del_campo(_leer(tmp_path / "s.pdf"), 0) == pytest.approx(esperado, abs=0.01)
 
 
@@ -423,8 +441,10 @@ def test_sello_tiene_tamano_fijo_en_paginas_de_distinto_tamano(tmp_path, firmant
     salida = tmp_path / "s.pdf"
     firmar_pdf(entrada, salida, firmante, "PRUEBA", OpcionesFirma(tipo=tipo, paginas="todas"))
     reader = _leer(salida)
-    for indice in range(3):
-        assert _tamano(_rect_del_sello(reader, indice)) == firma_pdf.TAMANOS_SELLO[tipo]
+    ancho, alto = firma_pdf.TAMANOS_SELLO[tipo]
+    # the landscape Letter page (displayed landscape) gets the same stamp turned: vertical
+    for indice, tamano in enumerate([(ancho, alto), (alto, ancho), (ancho, alto)]):
+        assert _tamano(_rect_del_sello(reader, indice)) == tamano
 
 
 # --- Posición propia por página -----------------------------------------------
@@ -446,15 +466,16 @@ def test_posicion_propia_de_una_pagina_solo_cambia_esa_pagina(tmp_path, pdf_mult
     assert estado.modification_level in (None, ModificationLevel.NONE)
 
     esperados = [
-        firma_pdf.rect_sello(documento, A4, "firma"),
-        firma_pdf.rect_sello(propia, CARTA_HORIZONTAL, "firma"),
-        firma_pdf.rect_sello(documento, A4, "firma"),
+        firma_pdf.rect_sello(documento, A4, "firma", rotacion=0),
+        firma_pdf.rect_sello(propia, CARTA_HORIZONTAL, "firma", rotacion=0),
+        firma_pdf.rect_sello(documento, A4, "firma", rotacion=0),
     ]
-    for indice, esperado in enumerate(esperados):
+    for indice, (esperado, tamano) in enumerate(zip(esperados, [(160, 40), (40, 160), (160, 40)])):
         rect = _rect_del_sello(reader, indice)
         assert rect == pytest.approx(esperado, abs=0.01)
-        assert _tamano(rect) == (160, 40)
-    # El sello mide lo mismo en cada página: la apariencia se sigue compartiendo.
+        assert _tamano(rect) == tamano
+    # El sello mide lo mismo en cada página: la apariencia se sigue compartiendo
+    # (en la carta horizontal, a través de una envoltura que la gira).
     campo = firmas[0].sig_field
     for indice in range(2):
         _comprobar_sello_y_enlace(reader, indice, campo, 2, esperados[indice])
@@ -494,7 +515,7 @@ def test_posiciones_propias_en_pdf_ya_firmado_se_respetan(tmp_path, pdf_multipag
     (widget,) = [w for w, c in _widgets_de_firma(reader, 0) if c["/T"] == resultado.campo]
     assert _rect(widget) == pytest.approx(firma_pdf.rect_sello(propias[0], A4, "firma"), abs=0.01)
     for indice, vista in enumerate(vistas[1:], start=1):
-        esperado = firma_pdf.rect_sello(propias.get(indice, documento), vista, "firma")
+        esperado = firma_pdf.rect_sello(propias.get(indice, documento), vista, "firma", rotacion=0)
         _comprobar_sello_y_enlace(reader, indice, campo, 0, esperado)
     _comprobar_firmas_validas(segunda, material_prueba)
 

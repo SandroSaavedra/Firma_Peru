@@ -209,9 +209,16 @@ no permite ningún cambio, la aplicación no lo firma.
 
 ### Páginas rotadas
 
-La posición del sello se guarda en el espacio de la página sin rotar. En
-páginas con rotación el sello queda donde se ubicó, pero su texto aparece girado
-junto con la página.
+El sello sigue la orientación con la que se **ve** cada página, sea cual sea su
+rotación guardada (/Rotate):
+
+- Página que se ve vertical (A4, carta): sello horizontal, abajo a la derecha.
+- Página que se ve horizontal (A3 apaisada): sello vertical en el margen
+  derecho.
+
+La posición (automática, del documento o puesta a mano en una página) se
+interpreta en ese mismo marco: en las páginas que se ven verticales y no están
+rotadas es la misma de siempre.
 
 ## Línea de comandos
 
