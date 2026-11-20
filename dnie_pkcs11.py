@@ -52,6 +52,9 @@ CK_BBOOL = ctypes.c_ubyte
 CK_UNAVAILABLE_INFORMATION = 0xFFFFFFFF
 
 CKR_OK = 0x0
+CKR_GENERAL_ERROR = 0x5
+CKR_FUNCTION_FAILED = 0x6
+CKR_DEVICE_ERROR = 0x30
 CKR_DEVICE_REMOVED = 0x32
 CKR_FUNCTION_NOT_SUPPORTED = 0x54
 CKR_PIN_INCORRECT = 0xA0
@@ -88,6 +91,11 @@ CKM_RSA_PKCS = 0x1
 CKM_SHA256_RSA_PKCS = 0x40
 
 # PIN rechazado: se detiene en el acto y nunca se reintenta ni se prueba CNG.
+# Card or reader hiccups worth repeating the same signature for (field log
+# 2026-11-20: one CKR_GENERAL_ERROR after 444 good signatures). Never a PIN error.
+CODIGOS_TRANSITORIOS = {CKR_GENERAL_ERROR, CKR_FUNCTION_FAILED, CKR_DEVICE_ERROR}
+REINTENTOS_FIRMA = 2
+ESPERA_REINTENTO_S = 1.0
 CODIGOS_PIN_PKCS11 = {CKR_PIN_INCORRECT, CKR_PIN_INVALID, CKR_PIN_LEN_RANGE, CKR_PIN_EXPIRED, CKR_PIN_LOCKED}
 # Código de Windows equivalente: la aplicación muestra el mismo mensaje y el lote
 # decide igual (detenerse) que con CNG.
@@ -589,6 +597,7 @@ class SesionPkcs11:
         self.firmante: FirmanteDeSesion | None = None
         self.firmas = 0
         self.fallidas = 0
+        self.reintentos = 0  # signatures repeated after a transient card error
         self._error_pin: int | None = None
 
     def _borrar_pin(self):
@@ -693,10 +702,21 @@ class SesionPkcs11:
         if ck is not None and inicializado:
             _finalizar(ck)
             logger.info(
-                "Sesión PKCS#11 cerrada: %d firma(s) realizada(s) y %d intento(s) fallido(s) con un solo login.",
+                "Sesión PKCS#11 cerrada: %d firma(s) realizada(s), %d reintento(s) y %d intento(s) fallido(s) con un solo login.",
                 self.firmas,
+                self.reintentos,
                 self.fallidas,
             )
+
+    def _firmar_una_vez(self, datos: bytes) -> bytes:
+        """
+        C_SignInit, the context login when the key requires it, and C_Sign. A
+        failed C_Sign ends the operation, so a retry starts again from here.
+        """
+        self._ck.iniciar_firma(self._sesion, CKM_RSA_PKCS, self._objeto_llave)
+        if self.siempre_autenticar:
+            self._login(CKU_CONTEXT_SPECIFIC)
+        return self._ck.firmar(self._sesion, datos)
 
     def _firmar(self, firmante, resumen: bytes, digest_algorithm: str) -> bytes:
         """Respaldo de `FirmanteDeSesion`: una firma con la sesión abierta."""
@@ -708,17 +728,27 @@ class SesionPkcs11:
                 codigo=self._error_pin,
             )
         inicio = time.monotonic()
-        try:
-            datos = digest_info(resumen, digest_algorithm)
-            self._ck.iniciar_firma(self._sesion, CKM_RSA_PKCS, self._objeto_llave)
-            if self.siempre_autenticar:
-                self._login(CKU_CONTEXT_SPECIFIC)
-            firma = self._ck.firmar(self._sesion, datos)
-        except ErrorCNG as e:
-            self.fallidas += 1
-            if es_error_de_pin(e):
-                self._detener_por_pin(e)
-            raise
+        datos = digest_info(resumen, digest_algorithm)
+        intento = 0
+        while True:
+            try:
+                firma = self._firmar_una_vez(datos)
+                break
+            except ErrorCNG as e:
+                if es_error_de_pin(e):
+                    self.fallidas += 1
+                    self._detener_por_pin(e)
+                    raise
+                if not (isinstance(e, ErrorPkcs11) and e.rv in CODIGOS_TRANSITORIOS) or intento >= REINTENTOS_FIRMA:
+                    self.fallidas += 1
+                    raise
+                intento += 1
+                self.reintentos += 1
+                logger.warning(
+                    "Sesión PKCS#11: la firma n.º %d falló (%s); reintento %d de %d en %.1f s con el mismo login.",
+                    self.firmas + 1, e, intento, REINTENTOS_FIRMA, ESPERA_REINTENTO_S,
+                )
+                time.sleep(ESPERA_REINTENTO_S)
         self.firmas += 1
         logger.info(
             "Sesión PKCS#11: firma n.º %d (resumen %s) en %d ms.", self.firmas, digest_algorithm, _ms(inicio)

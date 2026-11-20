@@ -58,6 +58,7 @@ class ModuloFalso:
         self.pin = pin
         self.mecanismos_ = list(mecanismos)
         self.fallos = {}
+        self.fallos_una_vez = {}  # operación -> lista de CKR que devuelve, uno por llamada
         self.llamadas = []
         self.logins = []
         self.pines = []
@@ -90,6 +91,8 @@ class ModuloFalso:
         self.llamadas.append(operacion)
         if operacion in self.fallos:
             raise p11.ErrorPkcs11(operacion, self.fallos[operacion])
+        if self.fallos_una_vez.get(operacion):
+            raise p11.ErrorPkcs11(operacion, self.fallos_una_vez[operacion].pop(0))
 
     def _exigir_slots_listados(self, operacion):
         if not self.slots_listados:
@@ -432,6 +435,72 @@ def test_la_sesion_cierra_todo_aunque_falle_la_firma(dnie_v3, material_prueba, m
             dnie_v3.fallos["C_Sign"] = 0x30  # CKR_DEVICE_ERROR
             firmante._firmar_resumen(b"\x00" * 32, "sha256")
     assert "C_Logout" in dnie_v3.llamadas and _todo_cerrado(dnie_v3)
+
+
+@pytest.fixture(autouse=True)
+def _sin_espera_entre_reintentos(monkeypatch):
+    monkeypatch.setattr(p11, "ESPERA_REINTENTO_S", 0)
+
+
+@pytest.mark.parametrize("ckr", [0x5, 0x6, 0x30])  # GENERAL_ERROR, FUNCTION_FAILED, DEVICE_ERROR
+def test_error_transitorio_de_la_tarjeta_reintenta_la_misma_firma(dnie_v3, material_prueba, monkeypatch, caplog, ckr):
+    """Field case 2026-11-20: one C_Sign with CKR_GENERAL_ERROR after 444 good signatures."""
+    monkeypatch.setattr(dnie_cng, "cadena_intermedia", lambda c: [])
+    caplog.set_level(logging.INFO)
+    resumen = hashlib.sha256(b"pagina 70").digest()
+    with _abrir(material_prueba) as firmante:
+        dnie_v3.fallos_una_vez["C_Sign"] = [ckr]
+        _verificar_firma(material_prueba, firmante._firmar_resumen(resumen, "sha256"), resumen)
+        sesion = firmante.sesion
+        assert sesion.firmas == 1 and sesion.reintentos == 1 and sesion.fallidas == 0
+    assert dnie_v3.llamadas.count("C_Sign") == 2
+    # The retry redoes the context login with the PIN the card already accepted: nothing else.
+    assert dnie_v3.logins == [p11.CKU_USER] + [p11.CKU_CONTEXT_SPECIFIC] * 2
+    assert "reintento" in caplog.text.lower() and PIN not in caplog.text
+
+
+def test_error_transitorio_persistente_se_rinde_tras_dos_reintentos(dnie_v3, material_prueba, monkeypatch):
+    monkeypatch.setattr(dnie_cng, "cadena_intermedia", lambda c: [])
+    with _abrir(material_prueba) as firmante:
+        dnie_v3.fallos["C_Sign"] = 0x5
+        with pytest.raises(dnie_cng.ErrorCNG) as error:
+            firmante._firmar_resumen(b"\x00" * 32, "sha256")
+        assert error.value.codigo == 0x5
+        assert firmante.sesion.fallidas == 1
+    assert dnie_v3.llamadas.count("C_Sign") == 1 + p11.REINTENTOS_FIRMA
+    assert _todo_cerrado(dnie_v3)
+
+
+def test_error_que_no_es_transitorio_no_se_reintenta(dnie_v3, material_prueba, monkeypatch):
+    monkeypatch.setattr(dnie_cng, "cadena_intermedia", lambda c: [])
+    with _abrir(material_prueba) as firmante:
+        dnie_v3.fallos["C_Sign"] = p11.CKR_DEVICE_REMOVED
+        with pytest.raises(dnie_cng.ErrorCNG):
+            firmante._firmar_resumen(b"\x00" * 32, "sha256")
+    assert dnie_v3.llamadas.count("C_Sign") == 1
+
+
+def test_pin_rechazado_durante_un_reintento_detiene_sin_otro_intento(dnie_v3, material_prueba, monkeypatch):
+    """A retry never sends the PIN again once the card rejected it."""
+    monkeypatch.setattr(dnie_cng, "cadena_intermedia", lambda c: [])
+    original = _CryptokiFalso.firmar
+
+    def _firmar_y_cambiar_pin(self, sesion, datos):
+        try:
+            return original(self, sesion, datos)
+        finally:
+            self.m.pin = "000000"  # from now on the card rejects the PIN
+
+    monkeypatch.setattr(_CryptokiFalso, "firmar", _firmar_y_cambiar_pin)
+    with _abrir(material_prueba) as firmante:
+        dnie_v3.fallos_una_vez["C_Sign"] = [0x5]
+        with pytest.raises(dnie_cng.ErrorCNG) as error:
+            firmante._firmar_resumen(b"\x00" * 32, "sha256")
+        assert error.value.codigo == 0x8010006B
+        with pytest.raises(dnie_cng.ErrorCNG):  # the session is stopped: no further PIN use
+            firmante._firmar_resumen(b"\x00" * 32, "sha256")
+    assert dnie_v3.logins == [p11.CKU_USER, p11.CKU_CONTEXT_SPECIFIC, p11.CKU_CONTEXT_SPECIFIC]
+    assert dnie_v3.llamadas.count("C_Sign") == 1
 
 
 # --- abrir_sesion: cuándo se sigue por CNG -------------------------------------------
