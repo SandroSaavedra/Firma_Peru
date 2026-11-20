@@ -120,6 +120,7 @@ _CODIGOS_DETENER = {
 }
 MENSAJE_OCUPADO = "Espere a que termine la firma en curso."
 MENSAJE_CANCELADO_LOTE = "Se canceló la firma por lotes. Los documentos restantes quedan pendientes."
+MENSAJE_REINTENTO_AL_FINAL = "El DNIe tuvo un error momentáneo; este documento se volverá a firmar al final del lote."
 MENSAJE_CANCELADO = "Se canceló la firma. No se guardó ningún archivo."
 # Firma real en cada página: segundos mínimos entre dos avisos de avance a la
 # interfaz (el primero y el último siempre se envían).
@@ -163,6 +164,11 @@ def mensaje_de_error(error: Exception) -> str:
     if isinstance(error, ErrorFirma):
         return str(error)
     return f"Error inesperado: {error}"
+
+
+def _es_error_transitorio_de_tarjeta(error: Exception) -> bool:
+    """A card or reader hiccup that already outlived the in-place retries of the PKCS#11 session."""
+    return isinstance(error, dnie_pkcs11.ErrorPkcs11) and error.rv in dnie_pkcs11.CODIGOS_TRANSITORIOS
 
 
 def accion_tras_error(error: Exception) -> str:
@@ -1423,6 +1429,7 @@ class Api:
         firmados, errores, procesados = [], [], set()
         detenido = mensaje = None
         firmas_en_sesion = 0
+        via_sesion = "-"
         pin_provisto = bool(pin)
         self._emitir_progreso({"evento": "inicio", "total": total, "pin_provisto": pin_provisto})
         logger.info("Lote: %d documento(s) por firmar.", total)
@@ -1441,9 +1448,13 @@ class Api:
                 "sí" if pin_provisto else "no",
                 "sí" if hwnd else "no",
             )
+            # A document hit by a transient card error is appended once to the
+            # end of `trabajo`; the for loop also visits what is appended.
+            trabajo = list(enumerate(items, 1))
+            reintentados = set()
             try:
                 with sesion as firmante:
-                    for indice, item in enumerate(items, 1):
+                    for indice, item in trabajo:
                         if self._cancelar_lote.is_set():
                             detenido, mensaje = "cancelado", MENSAJE_CANCELADO_LOTE
                             break
@@ -1487,6 +1498,16 @@ class Api:
                                 self._emitir_progreso({**base, "estado": "pendiente", "mensaje": texto})
                                 detenido, mensaje = "pin_cancelado", texto
                                 break
+                            if _es_error_transitorio_de_tarjeta(e) and item["id"] not in reintentados:
+                                reintentados.add(item["id"])
+                                logger.warning(
+                                    "Lote: documento %d de %d (%s) se reintentará al final del lote.",
+                                    indice, total, item["nombre"],
+                                )
+                                self._marcar(item, "pendiente", MENSAJE_REINTENTO_AL_FINAL)
+                                self._emitir_progreso({**base, "estado": "pendiente", "mensaje": MENSAJE_REINTENTO_AL_FINAL})
+                                trabajo.append((indice, item))
+                                continue
                             procesados.add(item["id"])
                             self._marcar(item, "error", texto)
                             errores.append({"id": item["id"], "nombre": item["nombre"], "mensaje": texto})
@@ -1513,6 +1534,7 @@ class Api:
                         self._emitir_progreso({**base, "estado": "firmado", "salida": resultado.salida})
             finally:
                 firmas_en_sesion = sesion.firmas
+                via_sesion = "PKCS#11" if isinstance(sesion, dnie_pkcs11.SesionPkcs11) else "CNG"
         except Exception as e:  # noqa: BLE001 - sin llave o sin sesión no se firma nada
             if isinstance(e, (ErrorCNG, ErrorFirma, OSError)):
                 logger.warning("Lote detenido antes de firmar tras %d ms: %s", _ms(inicio_lote), describir_error(e))
@@ -1542,10 +1564,11 @@ class Api:
             "firmas_en_sesion": firmas_en_sesion,
         }
         logger.info(
-            "Lote terminado: %d firmado(s), %d con error, %d pendiente(s); firmas en la sesión CNG: %d.",
+            "Lote terminado: %d firmado(s), %d con error, %d pendiente(s); firmas en la sesión %s: %d.",
             len(firmados),
             len(errores),
             pendientes,
+            via_sesion,
             firmas_en_sesion,
         )
         self._emitir_progreso({"evento": "fin", "resumen": resumen})

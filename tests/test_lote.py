@@ -750,6 +750,41 @@ def test_lote_cada_pagina_dnie_v3_por_pkcs11_con_un_solo_pin(api, cng, dnie_v3, 
     assert dnie_v3.sesiones == {} and dnie_v3.inicializado == 0  # sesión y biblioteca cerradas
 
 
+def test_lote_reintenta_al_final_un_documento_con_error_transitorio(api, cng, dnie_v3, tmp_path, monkeypatch, caplog):
+    """The card keeps failing one page past the in-place retries: the document is redone at the end."""
+    caplog.set_level("INFO")
+    monkeypatch.setattr(dnie_pkcs11, "ESPERA_REINTENTO_S", 0)
+    rutas = _pdfs(tmp_path, "uno.pdf", "dos.pdf", paginas=3)
+    api.agregar_rutas([str(r) for r in rutas])
+    dnie_v3.fallos_una_vez["C_Sign"] = [0x5] * (1 + dnie_pkcs11.REINTENTOS_FIRMA)
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["ok"] and r["errores"] == [] and r["detenido"] is None, r
+    assert [f["nombre"] for f in r["firmados"]] == ["dos.pdf", "uno.pdf"]
+    for f in r["firmados"]:
+        v = validar_pdf(f["salida"], permitir_red=False)
+        assert len(v) == 3 and all(x["integridad"] == "intacta" for x in v)
+    eventos = [e for e in api._ventana.eventos() if e["evento"] == "archivo" and e["nombre"] == "uno.pdf"]
+    assert [e["estado"] for e in eventos] == ["firmando", "pendiente", "firmando", "firmado"]
+    assert eventos[1]["mensaje"] == app.MENSAJE_REINTENTO_AL_FINAL
+    assert "se reintentará al final del lote" in caplog.text
+    assert "firmas en la sesión PKCS#11: 6" in caplog.text
+    assert dnie_v3.logins.count(USUARIO) == 1  # one login for the whole batch, retries included
+
+
+def test_lote_error_transitorio_persistente_se_reintenta_una_sola_vez(api, cng, dnie_v3, tmp_path, monkeypatch):
+    monkeypatch.setattr(dnie_pkcs11, "ESPERA_REINTENTO_S", 0)
+    (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=2)
+    api.agregar_rutas([str(ruta)])
+    dnie_v3.fallos["C_Sign"] = 0x5
+
+    r = api.firmar_lote({"caja": CAJA, "paginas": "cada_pagina", "pin": PIN})
+    assert r["firmados"] == [] and [e["nombre"] for e in r["errores"]] == ["uno.pdf"], r
+    # First pass and the end-of-batch pass, each with the in-place retries.
+    assert dnie_v3.llamadas.count("C_Sign") == 2 * (1 + dnie_pkcs11.REINTENTOS_FIRMA)
+    assert _estados(api) == [("uno.pdf", "error")]
+
+
 def test_firmar_un_documento_dnie_v3_por_pkcs11_con_un_solo_pin(api, cng, dnie_v3, tmp_path):
     (ruta,) = _pdfs(tmp_path, "uno.pdf", paginas=4)
     api.abrir_ruta(str(ruta))

@@ -41,7 +41,7 @@
 ## Tasks
 
 - [x] T1 PKCS#11 signature retry: up to 2 retries with about 1 s backoff on `CKR_GENERAL_ERROR` (0x5), `CKR_DEVICE_ERROR` (0x30), and `CKR_FUNCTION_FAILED` (0x6). Each retry redoes C_SignInit, the context login, and C_Sign. No retry on PIN errors. Each retry is logged. Route: inline (one source file plus its tests).
-- [ ] T2 Batch resilience: a document that fails with a transient card error goes back to the end of the queue once. The UI shows "reintentando" live. Fix the "firmas en la sesión CNG" label. Route: inline or delegated, depending on the UI size.
+- [x] T2 Batch resilience: a document that fails with a transient card error goes back to the end of the queue once. The UI shows "reintentando" live. Fix the "firmas en la sesión CNG" label. Route: inline or delegated, depending on the UI size.
 - [ ] T3 Stamp by displayed orientation in `firma_pdf.py`: classify each page from its view box and `/Rotate`, choose the default position (portrait: bottom right; landscape: right margin, vertical), and draw a rotated box and appearance that compensate `/Rotate`. Route: delegated writer (2+ non-trivial files with tests).
 - [ ] T4 UI preview of the automatic layout per page (`rectPdf`, `cajaDePagina`, `ajustarTextoSello`). Route: delegated writer.
 - [ ] T5 Version bump, build (direct steps, see the build memory), release (ask before push).
@@ -66,4 +66,8 @@
 - 2026-11-20 T1 done (route: inline; one source file plus its tests, no research needed).
   - `SesionPkcs11._firmar` retries through `_firmar_una_vez` (C_SignInit, context login, C_Sign) up to `REINTENTOS_FIRMA = 2` times, `ESPERA_REINTENTO_S = 1.0` apart, only for `CODIGOS_TRANSITORIOS` (0x5, 0x6, 0x30). A PIN error stops at once. Other errors raise with no retry. New counter `reintentos` in the close log.
   - Fake: `ModuloFalso.fallos_una_vez`. Tests: transient retry (3 codes), give up after 2 retries, no retry for CKR_DEVICE_REMOVED, PIN rejected in the retry's context login stops with no further PIN use.
-  - RED: 41 errors (no `ESPERA_REINTENTO_S`). GREEN: 406 passed.
+  - RED: 41 errors (no `ESPERA_REINTENTO_S`). GREEN: 406 passed. Commit `29ca256`.
+- 2026-11-20 T2 done (route: inline; only `app.py` changed, plus tests; the UI already shows a row's `pendiente` state with its message, so no UI change).
+  - `_firmar_lote` iterates a `trabajo` list. A document that fails with `_es_error_transitorio_de_tarjeta` (`ErrorPkcs11` with an rv in `CODIGOS_TRANSITORIOS`, i.e. after the in-place retries) is marked `pendiente` with `MENSAJE_REINTENTO_AL_FINAL`, emitted live, and appended once to the end. A second failure is a normal error.
+  - The batch summary log names the real session (`PKCS#11` or `CNG`) instead of always "CNG".
+  - RED: 2 failed. GREEN: 408 passed.
