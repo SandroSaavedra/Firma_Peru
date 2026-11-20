@@ -44,7 +44,7 @@
 - [x] T2 Batch resilience: a document that fails with a transient card error goes back to the end of the queue once. The UI shows "reintentando" live. Fix the "firmas en la sesión CNG" label. Route: inline or delegated, depending on the UI size.
 - [x] T3 Stamp by displayed orientation in `firma_pdf.py`: classify each page from its view box and `/Rotate`, choose the default position (portrait: bottom right; landscape: right margin, vertical), and draw a rotated box and appearance that compensate `/Rotate`. Route: delegated writer (2+ non-trivial files with tests).
 - [x] T4 UI preview of the automatic layout per page (`rectPdf`, `cajaDePagina`, `ajustarTextoSello`). Route: delegated writer.
-- [ ] T5 Version bump, build (direct steps, see the build memory), release (ask before push).
+- [x] T5 Version bump, build (direct steps, see the build memory), release (ask before push).
 
 ## Acceptance criteria
 
@@ -90,3 +90,4 @@
   - RED: `python -m pytest -q tests/test_ui_paridad.py` 10 errors (FileNotFoundError: `ui/geometria.js`). GREEN: same command 12 passed; `python -m pytest -q` 485 passed; `node --check` on `.mjs` copies of `ui/app.js` and `ui/geometria.js` OK.
   - Known residual differences: Python rounds an odd multiple of 45° /Rotate with banker's rounding and JS with `Math.round` (invalid /Rotate values only); the preview's font fitting remains an approximation of pyHanko's text layout (pre-existing).
   - Commit `dcaa2f0`. Parent re-run: 485 passed; `firmador.spec` bundles the whole `ui` folder, so `ui/geometria.js` ships in the installer. Not run: a visual check in the real app window (pending, by the user).
+- 2026-11-20 T5 done (route: inline). The user checked the preview and the signed result from `python app.py` ("sí funcionó"). Version 1.2.9; build steps run directly: pytest 485 passed, PyInstaller OK (`ui/geometria.js` bundled), ISCC → `dist\installer\FirmaPeru-Setup-1.2.9.exe`. Release v1.2.9 published on GitHub.
